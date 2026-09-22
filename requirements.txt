@@ -10,6 +10,11 @@ psycopg[binary]
 # Consumo de APIs REST externas
 httpx
 
+# Web Scraping & Integração Hardness
+requests
+beautifulsoup4
+pandas
+
 # Arquivos estáticos e servidor de produção (para paridade dev/prod)
 whitenoise
 gunicorn
