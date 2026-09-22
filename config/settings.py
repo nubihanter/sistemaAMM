@@ -25,10 +25,18 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 
     # 2. Seus Apps do Sistema de EPIs
+    'accounts.apps.AccountsConfig',
     'inventory.apps.InventoryConfig',
     'sales.apps.SalesConfig',
     'integrations.apps.IntegrationsConfig',
 ]
+# Informa ao Django para usar seu User customizado
+AUTH_USER_MODEL = 'accounts.User'
+
+# Redirecionamentos após login/logout
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = 'login'
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
