@@ -10,6 +10,7 @@ class NotaFiscal(models.Model):
     valor_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Total")
     cfop = models.CharField(max_length=10, blank=True, null=True, verbose_name="CFOP")
     status = models.CharField(max_length=50, blank=True, null=True, verbose_name="Status")
+    vendedor_nome = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Vendedor")
     
     # Campo JSON para armazenar todos os campos brutos vindos do Hardness (evita perder dados)
     dados_brutos = models.JSONField(blank=True, null=True, verbose_name="Payload Bruto")

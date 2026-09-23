@@ -1,6 +1,6 @@
+# accounts/models.py
 from django.contrib.auth.models import AbstractUser
 from django.db import models
-
 
 class User(AbstractUser):
     class Role(models.TextChoices):
@@ -14,6 +14,15 @@ class User(AbstractUser):
         choices=Role.choices,
         default=Role.VENDEDOR,
         verbose_name="Perfil de Acesso"
+    )
+    
+    # Campo para casar o login do Django com o nome que vem do Hardness (ex: "GABRIELLI")
+    nome_vendedor_erp = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True, 
+        verbose_name="Nome do Vendedor no Hardness/ERP",
+        help_text="Obrigatório para usuários com perfil Vendedor. Ex: GABRIELLI"
     )
 
     @property
@@ -31,9 +40,3 @@ class User(AbstractUser):
     @property
     def is_almoxarifado(self) -> bool:
         return self.role == self.Role.ALMOXARIFADO
-
-    def save(self, *args, **kwargs):
-        # Garante que Administradores ganhem acesso de staff automaticamente
-        if self.role == self.Role.ADMINISTRADOR:
-            self.is_staff = True
-        super().save(*args, **kwargs)

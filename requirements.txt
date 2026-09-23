@@ -18,3 +18,5 @@ pandas
 # Arquivos estáticos e servidor de produção (para paridade dev/prod)
 whitenoise
 gunicorn
+
+plotly

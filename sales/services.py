@@ -74,11 +74,13 @@ def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome="AMM EP
                 "empresa": empresa_nome,
                 "serie": str(item.get("T007_Flag_ACP", "")).strip(),
                 "cliente_nome": str(item.get("D024_Nome_Empresa", item.get("D024_Nome_Fantasia", ""))).strip(),
-                "cliente_documento": str(item.get("D024_Id", "")).strip(), # ID do cliente no ERP
+                "cliente_documento": str(item.get("D024_Id", "")).strip(),
                 "data_emissao": parse_data(item.get("T007_Data_Emissao")),
                 "valor_total": parse_decimal(item.get("T007_Valor_Total")),
                 "cfop": str(item.get("D006_Codigo_CFOP", "")).strip(),
                 "status": status,
+                # ESTA LINHA É FUNDAMENTAL:
+                "vendedor_nome": str(item.get("vendedor.C007_Primeiro_Nome", "")).strip().upper(),
                 "dados_brutos": {k: (None if pd.isna(v) else v) for k, v in item.items()},
             }
 

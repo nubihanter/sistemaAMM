@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard de Vendas - AMM</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Script base do Plotly via CDN -->
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <style>
+        body { background-color: #f8fafc; }
+        .card-metric { border-radius: 10px; border: none; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    </style>
+</head>
+<body class="p-4">
+<div class="container-fluid">
+    <!-- Cabeçalho -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="fw-bold text-primary mb-0">📊 Dashboard de Vendas</h2>
+            <small class="text-muted">Visão atual: <strong>{{ vendedora_selecionada }}</strong> | Usuário: {{ request.user.username }} ({{ request.user.get_role_display }})</small>
+        </div>
+        <form method="post" action="{% url 'logout' %}">
+            {% csrf_token %}
+            <button class="btn btn-outline-danger btn-sm" type="submit">Sair</button>
+        </form>
+    </div>
+
+    <!-- Barra de Filtros -->
+    <!-- Barra de Filtros com Seletor de Vendedores Únicos -->
+    <div class="card p-3 mb-4 shadow-sm">
+        <form method="get" class="row g-3 align-items-center">
+            
+            {% if pode_selecionar %}
+            <div class="col-md-5">
+                <label for="id_visao" class="form-label fw-bold">Selecionar Vendedor / Visão:</label>
+                <div class="input-group">
+                    <span class="input-group-text">👤</span>
+                    <select id="id_visao" name="visao" class="form-select" onchange="this.form.submit()">
+                        <option value="EMPRESA" {% if vendedora_selecionada == 'EMPRESA' %}selected{% endif %}>
+                            🏢 EMPRESA (Visão Geral)
+                        </option>
+                        
+                        <optgroup label="Vendedores Cadastrados">
+                            {% for vend in vendedores_disponiveis %}
+                                <option value="{{ vend }}" {% if vendedora_selecionada == vend %}selected{% endif %}>
+                                    {{ vend }}
+                                </option>
+                            {% empty %}
+                                <option value="" disabled>Nenhum vendedor encontrado</option>
+                            {% endfor %}
+                        </optgroup>
+                    </select>
+                </div>
+            </div>
+            {% else %}
+            <!-- Caso seja perfil Vendedor, exibe apenas a identificação fixa sem permissão de troca -->
+            <div class="col-md-5">
+                <label class="form-label fw-bold">Sua Visão:</label>
+                <input type="text" class="form-control bg-light" value="{{ vendedora_selecionada }}" readonly>
+            </div>
+            {% endif %}
+
+            <!-- Seletor de Mês -->
+            <div class="col-md-3">
+                <label for="id_mes" class="form-label fw-bold">Mês:</label>
+                <select id="id_mes" name="mes" class="form-select" onchange="this.form.submit()">
+                    {% for num, nome in meses %}
+                    <option value="{{ num }}" {% if mes_selecionado == num %}selected{% endif %}>
+                        {{ num|stringformat:"02d" }} - {{ nome }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Seletor de Ano -->
+            <div class="col-md-2">
+                <label for="id_ano" class="form-label fw-bold">Ano:</label>
+                <select id="id_ano" name="ano" class="form-select" onchange="this.form.submit()">
+                    {% for a in anos %}
+                    <option value="{{ a }}" {% if ano_selecionado == a %}selected{% endif %}>
+                        {{ a }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Botão de submissão explícita caso o usuário desative JS -->
+            <div class="col-md-2 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary w-100">Filtrar</button>
+            </div>
+
+        </form>
+    </div>
+
+    <!-- Linha de Métricas -->
+    <div class="row g-3 mb-4">
+        <div class="col-md-3">
+            <div class="card card-metric p-3 bg-white">
+                <span class="text-muted">Total Vendas</span>
+                <h3 class="fw-bold text-success">{{ metricas.total_vendas }}</h3>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card card-metric p-3 bg-white">
+                <span class="text-muted">Nº de Vendas</span>
+                <h3 class="fw-bold text-primary">{{ metricas.num_vendas }}</h3>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card card-metric p-3 bg-white">
+                <span class="text-muted">Clientes Únicos</span>
+                <h3 class="fw-bold text-info">{{ metricas.num_clientes }}</h3>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card card-metric p-3 bg-white">
+                <span class="text-muted">Ticket Médio</span>
+                <h3 class="fw-bold text-dark">{{ metricas.ticket_medio }}</h3>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gráficos -->
+    <div class="row g-4 mb-4">
+        <div class="col-md-6">
+            <div class="card p-3 bg-white shadow-sm">
+                {{ fig_evolucao|safe }}
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card p-3 bg-white shadow-sm">
+                {{ fig_barras|safe }}
+            </div>
+        </div>
+    </div>
+
+    {% if pode_selecionar %}
+    <div class="row">
+        <div class="col-12">
+            <div class="card p-3 bg-white shadow-sm">
+                {{ fig_ranking|safe }}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+</body>
+</html>
