@@ -30,6 +30,10 @@ INSTALLED_APPS = [
     'sales.apps.SalesConfig',
     'integrations.apps.IntegrationsConfig',
 ]
+
+APSCHEDULER_DATETIME_FORMAT = "N j, Y, f:s a"
+APSCHEDULER_RUN_NOW_TIMEOUT = 25  # Segundos
+
 # Informa ao Django para usar seu User customizado
 AUTH_USER_MODEL = 'accounts.User'
 

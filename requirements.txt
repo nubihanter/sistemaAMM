@@ -1,5 +1,6 @@
 # Framework base
 Django
+django-apscheduler
 
 # Gerenciamento de variáveis de ambiente (.env)
 python-decouple

@@ -23,3 +23,22 @@ class NotaFiscal(models.Model):
 
     def __str__(self):
         return f"NF {self.numero_nota} - {self.cliente_nome}"
+
+# sales/models.py (adicione ao final do arquivo)
+
+class MetaVendedor(models.Model):
+    vendedor_nome = models.CharField(max_length=100, db_index=True, verbose_name="Vendedor / Empresa")
+    mes = models.PositiveSmallIntegerField(verbose_name="Mês (1-12)")
+    ano = models.PositiveIntegerField(verbose_name="Ano")
+    valor = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor da Meta (R$)")
+    titulo_meta = models.CharField(max_length=255, blank=True, null=True, verbose_name="Título / Descrição da Meta")
+    data_atualizacao = models.DateTimeField(auto_now=True, verbose_name="Última Atualização")
+
+    class Meta:
+        verbose_name = "Meta de Vendedor"
+        verbose_name_plural = "Metas de Vendedores"
+        unique_together = ("vendedor_nome", "mes", "ano")
+        ordering = ["-ano", "-mes", "vendedor_nome"]
+
+    def __str__(self):
+        return f"{self.vendedor_nome} - {self.mes:02d}/{self.ano}: R$ {self.valor:,.2f}"

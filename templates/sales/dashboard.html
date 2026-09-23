@@ -102,14 +102,15 @@
         </div>
         <div class="col-md-3">
             <div class="card card-metric p-3 bg-white">
-                <span class="text-muted">Nº de Vendas</span>
-                <h3 class="fw-bold text-primary">{{ metricas.num_vendas }}</h3>
+                <span class="text-muted">Meta do Período</span>
+                <h3 class="fw-bold text-primary">{{ metricas.meta_total }}</h3>
+                <small class="fw-bold">{{ metricas.percentual_meta }} ({{ metricas.status_meta }})</small>
             </div>
         </div>
         <div class="col-md-3">
             <div class="card card-metric p-3 bg-white">
-                <span class="text-muted">Clientes Únicos</span>
-                <h3 class="fw-bold text-info">{{ metricas.num_clientes }}</h3>
+                <span class="text-muted">Nº de Vendas</span>
+                <h3 class="fw-bold text-info">{{ metricas.num_vendas }}</h3>
             </div>
         </div>
         <div class="col-md-3">

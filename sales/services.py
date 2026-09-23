@@ -4,9 +4,11 @@ import pandas as pd
 from django.db import transaction
 from django.utils import timezone
 from django.db.models import Max
+from integrations.piperun import PipeRunAPI
 from integrations.hardness import HardnessAPI
-from .models import NotaFiscal
-
+from .models import NotaFiscal,MetaVendedor
+from pathlib import Path
+import json
 
 def parse_decimal(valor):
     if valor is None or pd.isna(valor) or str(valor).strip() == "":
@@ -167,3 +169,102 @@ def sincronizar_desde_ultimo_registro(empresa_nome=None):
         data_fim=data_fim_str,
         empresa_nome=empresa_nome
     )
+
+def carregar_dados_metas():
+    """
+    Tenta carregar o JSON existente em disco ou dispara a API do PipeRun.
+    """
+    # 1. Tenta carregar do arquivo local se ele já existir
+    locais_possiveis = [
+        Path(__file__).resolve().parent.parent / "data" / "metas_por_vendedores.json",
+        Path(__file__).resolve().parent.parent / "integrations" / "data" / "metas_por_vendedores.json",
+    ]
+    
+    for caminho in locais_possiveis:
+        if caminho.exists():
+            try:
+                with open(caminho, "r", encoding="utf-8") as f:
+                    dados = json.load(f)
+                    if dados and isinstance(dados, list):
+                        return dados
+            except Exception:
+                pass
+
+    # 2. Se não encontrou o arquivo local, busca via PipeRunAPI
+    api = PipeRunAPI()
+    return api.export_goals_by_seller(salvar_json=True)
+
+
+def sincronizar_metas_piperun():
+    """
+    Lê a estrutura de metas do PipeRun e grava no banco de dados
+    (1 registro por vendedor, mês e ano, mantendo o maior goal_id).
+    """
+    dados_metas = carregar_dados_metas()
+
+    if not dados_metas or not isinstance(dados_metas, list):
+        print("⚠️ Nenhuma meta encontrada para sincronização.")
+        return 0, 0
+
+    criadas = 0
+    atualizadas = 0
+
+    for vendedor_info in dados_metas:
+        nome_vendedor = str(vendedor_info.get("nome", "")).strip().upper()
+        if not nome_vendedor:
+            continue
+
+        metas_lista = vendedor_info.get("metas", [])
+
+        # Dicionário para reter a meta de maior goal_id por (mês, ano)
+        metas_por_periodo = {}
+
+        for g in metas_lista:
+            data_inicio_str = g.get("data_inicio")
+            if not data_inicio_str:
+                continue
+
+            try:
+                dt_inicio = pd.to_datetime(data_inicio_str)
+                mes = dt_inicio.month
+                ano = dt_inicio.year
+            except Exception:
+                continue
+
+            chave_periodo = (mes, ano)
+            goal_id = g.get("goal_id", 0)
+
+            # Extrai o valor real da meta
+            valor_bruto = g.get("valor", 0)
+            try:
+                valor_dec = Decimal(str(valor_bruto))
+            except Exception:
+                valor_dec = Decimal("0.00")
+
+            # Se ainda não adicionou esse período ou encontrou uma meta com ID mais recente
+            if chave_periodo not in metas_por_periodo or goal_id > metas_por_periodo[chave_periodo]["goal_id"]:
+                metas_por_periodo[chave_periodo] = {
+                    "goal_id": goal_id,
+                    "valor": valor_dec,
+                    "titulo_meta": g.get("goal_title", "")
+                }
+
+        # Grava na tabela MetaVendedor
+        for (mes, ano), info in metas_por_periodo.items():
+            _, created = MetaVendedor.objects.update_or_create(
+                vendedor_nome=nome_vendedor,
+                mes=mes,
+                ano=ano,
+                defaults={
+                    "valor": info["valor"],
+                    "titulo_meta": info["titulo_meta"],
+                }
+            )
+
+            if created:
+                criadas += 1
+            else:
+                atualizadas += 1
+
+    print(f"🎯 Metas sincronizadas no SQLite! Criadas: {criadas} | Atualizadas: {atualizadas}")
+    return criadas, atualizadas
