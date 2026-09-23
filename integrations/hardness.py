@@ -61,11 +61,14 @@ class HardnessAPI:
         resposta_troca = self.session.post(url_troca_empresa) 
         verifica_empresa = self.verifica_empresa()
 
-        if verifica_empresa == empresa_id:
+        # Garante a comparação como string
+        if str(verifica_empresa) == str(empresa_id):
             if self.verbose:
                 print("✅ Empresa trocada com sucesso no servidor.")
+            return True 
         else:
-            input(f"⚠️ Atenção: A troca de empresa retornou status {resposta_troca.status_code}")
+            print(f"⚠️ Atenção: A troca de empresa retornou status {resposta_troca.status_code}")
+            return False 
 
     def verifica_empresa(self):
         url = f"{self.base_url}/sistema/funcoes/util/verificaEmpresaAtual/?ajax=true&callback=jQuery16205376931034128021_1778415793103&_=1778415835153"
@@ -95,8 +98,8 @@ class HardnessAPI:
 
         self.session.post(url or self.notafiscal_url, data=payload)
         response_pagina = self.session.get(url or self.notafiscal_url, params=payload)
-        with open("pagina.html", "w", encoding="utf-8") as f:
-            f.write(response_pagina.text)
+        # with open("pagina.html", "w", encoding="utf-8") as f:
+        #     f.write(response_pagina.text)
         
         soup = BeautifulSoup(response_pagina.text, 'html.parser')
         # 2. Encontra o formulário de filtro (ID dinâmico)
