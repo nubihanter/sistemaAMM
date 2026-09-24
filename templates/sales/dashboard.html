@@ -127,23 +127,36 @@
     </div>
 
     <!-- Gráficos -->
-    <div class="row g-4 mb-4">
-        <div class="col-md-6">
-            <div class="card p-3 bg-white shadow-sm">
-                {{ fig_evolucao|safe }}
+    <div class="row g-3 mb-4">
+        <!-- Coluna 1: Evolução Acumulada -->
+        <div class="col-lg-6">
+            <div class="card card-kpi p-3 bg-white h-100">
+                {{ grafico_evolucao|safe }}
             </div>
         </div>
-        <div class="col-md-6">
-            <div class="card p-3 bg-white shadow-sm">
-                {{ fig_barras|safe }}
+
+        <!-- Coluna 2: Últimas Metas vs Realizado -->
+        <div class="col-lg-6">
+            <div class="card card-kpi p-3 bg-white h-100">
+                {% if grafico_historico_metas %}
+                    {{ grafico_historico_metas|safe }}
+                {% else %}
+                    <div class="text-center p-5 text-muted">Sem histórico de metas para o vendedor selecionado.</div>
+                {% endif %}
             </div>
         </div>
     </div>
 
-    <div class="row">
-        <div class="col-12">
-            <div class="card p-3 bg-white shadow-sm">
-                {{ fig_ranking|safe }}
+    <!-- Linha do Ranking e Quantidade de Vendas -->
+    <div class="row g-3 mb-4">
+        <div class="col-lg-8">
+            <div class="card card-kpi p-3 bg-white h-100">
+                {{ grafico_ranking|safe }}
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card card-kpi p-3 bg-white h-100">
+                {{ grafico_qtd|safe }}
             </div>
         </div>
     </div>

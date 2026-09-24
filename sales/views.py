@@ -49,8 +49,17 @@ def dashboard_vendas(request):
         pode_selecionar = True
 
     # 4. Gera métricas e gráficos Plotly
-    metricas, fig_evolucao, fig_barras, fig_ranking = gerar_metricas_e_graficos(
-        df, vendedora_selecionada, mes_selecionado, ano_selecionado
+    (
+        metricas, 
+        graf_evolucao, 
+        graf_qtd, 
+        graf_ranking, 
+        graf_historico_metas
+    ) = gerar_metricas_e_graficos(
+        df=df,
+        vendedora_selecionada=vendedora_selecionada,
+        mes_selecionado=mes_selecionado,
+        ano_selecionado=ano_selecionado
     )
 
     context = {
@@ -60,9 +69,10 @@ def dashboard_vendas(request):
         "mes_selecionado": mes_selecionado,
         "ano_selecionado": ano_selecionado,
         "metricas": metricas,
-        "fig_evolucao": fig_evolucao,
-        "fig_barras": fig_barras,
-        "fig_ranking": fig_ranking,
+        'grafico_evolucao': graf_evolucao,
+        'grafico_qtd': graf_qtd,
+        'grafico_ranking': graf_ranking,
+        'grafico_historico_metas': graf_historico_metas,
         "meses": [(1, "Jan"), (2, "Fev"), (3, "Mar"), (4, "Abr"), (5, "Mai"), (6, "Jun"),
                   (7, "Jul"), (8, "Ago"), (9, "Set"), (10, "Out"), (11, "Nov"), (12, "Dez")],
         "anos": [hoje.year, hoje.year - 1]
