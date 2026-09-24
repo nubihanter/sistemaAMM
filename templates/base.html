@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Dashboard AMM{% endblock %}</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- DataTables CSS (para a tabela analítica interativa) -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+    <!-- Plotly JS -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { background-color: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .navbar-brand { font-weight: 700; color: #1f77b4 !important; }
+        .nav-link.active { font-weight: bold; border-bottom: 3px solid #1f77b4; color: #1f77b4 !important; }
+        .card-kpi { border: none; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); transition: transform 0.1s; }
+        .badge-curva-AA { background-color: #00441b; color: white; }
+        .badge-curva-A  { background-color: #238b45; color: white; }
+        .badge-curva-B  { background-color: #74c476; color: black; }
+        .badge-curva-C  { background-color: #bae4b3; color: black; }
+        .badge-curva-D  { background-color: #e5f5e0; color: black; }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <!-- Barra de Navegação Superior -->
+    <nav class="navbar navbar-expand-lg navbar-white bg-white shadow-sm mb-4">
+        <div class="container-fluid px-4">
+            <a class="navbar-brand d-flex align-items-center gap-2" href="{% url 'dashboard_vendas' %}">
+                <span>🏢 AMM Dashboard</span>
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMenu">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navMenu">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0 ms-3">
+                    <li class="nav-item">
+                        <a class="nav-link px-3 {% if request.resolver_match.url_name == 'dashboard_vendas' %}active{% endif %}" href="{% url 'dashboard_vendas' %}">
+                            📊 Vendas
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link px-3 {% if request.resolver_match.url_name == 'analise_clientes' %}active{% endif %}" href="{% url 'analise_clientes' %}">
+                            👥 Análise de Clientes
+                        </a>
+                    </li>
+                </ul>
+                <div class="d-flex align-items-center gap-3">
+                    <span class="text-muted small">👤 {{ request.user.username }}</span>
+                    <a href="{% url 'admin:index' %}" class="btn btn-sm btn-outline-secondary">Painel Admin</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Conteúdo Dinâmico -->
+    <div class="container-fluid px-4">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

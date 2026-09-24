@@ -1,0 +1,195 @@
+{% extends 'base.html' %}
+
+{% block title %}Análise de Clientes - AMM{% endblock %}
+
+{% block content %}
+<div class="row mb-3 align-items-center">
+    <div class="col-md-7">
+        <h2 class="fw-bold mb-0">👥 Análise de Carteira de Clientes</h2>
+        <p class="text-muted">Classificação por curva de faturamento (6m) e tempo de inatividade</p>
+    </div>
+
+    <!-- Seletor de Visão (Idêntico ao de Vendas) -->
+    <div class="col-md-5">
+        <form method="get" id="formVisao" class="d-flex gap-2 justify-content-md-end">
+            <!-- Mantém os filtros de curva/status se houver -->
+            {% for c in curvas_selecionadas %}
+                <input type="hidden" name="curva" value="{{ c }}">
+            {% endfor %}
+            {% for s in status_selecionados %}
+                <input type="hidden" name="status" value="{{ s }}">
+            {% endfor %}
+
+            <div class="input-group">
+                <span class="input-group-text bg-white fw-bold">👤 Visão:</span>
+                <select name="visao" class="form-select" onchange="document.getElementById('formVisao').submit();">
+                    <option value="EMPRESA" {% if visao_selecionada == 'EMPRESA' %}selected{% endif %}>🏢 EMPRESA (Visão Geral)</option>
+                    <optgroup label="Vendedores Ativos">
+                        {% for vend in vendedores_disponiveis %}
+                            <option value="{{ vend }}" {% if visao_selecionada == vend %}selected{% endif %}>{{ vend }}</option>
+                        {% endfor %}
+                    </optgroup>
+                </select>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Cards Resumo / Visão Geral da Carteira -->
+<div class="row g-3 mb-4">
+    <div class="col-md-2 col-6">
+        <div class="card card-kpi p-3 bg-white border-start border-primary border-4">
+            <span class="text-muted small">Total Clientes</span>
+            <h3 class="fw-bold text-dark mb-0">{{ kpis.total_clientes|default:"0" }}</h3>
+        </div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card card-kpi p-3 bg-white border-start border-success border-4">
+            <span class="text-muted small">Ativos (≤30d)</span>
+            <h3 class="fw-bold text-success mb-0">{{ kpis.clientes_ativos|default:"0" }}</h3>
+        </div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card card-kpi p-3 bg-white border-start border-warning border-4">
+            <span class="text-muted small">Em Risco (31-90d)</span>
+            <h3 class="fw-bold text-warning mb-0">{{ kpis.clientes_risco|default:"0" }}</h3>
+        </div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card card-kpi p-3 bg-white border-start border-danger border-4">
+            <span class="text-muted small">Inativos (>90d)</span>
+            <h3 class="fw-bold text-danger mb-0">{{ kpis.clientes_inativos|default:"0" }}</h3>
+        </div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card card-kpi p-3 bg-white border-start border-info border-4">
+            <span class="text-muted small">Alta Prioridade</span>
+            <h3 class="fw-bold text-info mb-0">{{ kpis.prioritarios|default:"0" }}</h3>
+        </div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card card-kpi p-3 bg-white border-start border-secondary border-4">
+            <span class="text-muted small">Fat. da Carteira</span>
+            <h5 class="fw-bold text-secondary mb-0 mt-1">{{ kpis.faturamento_carteira|default:"R$ 0,00" }}</h5>
+        </div>
+    </div>
+</div>
+
+<!-- Gráficos de Foco e Matriz de Risco -->
+<div class="row g-3 mb-4">
+    <div class="col-lg-6">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_status %}
+                {{ grafico_status|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem dados de clientes prioritários.</div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_matriz %}
+                {{ grafico_matriz|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem dados para a matriz de risco.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Bloco da Tabela Analítica com Filtros -->
+<div class="card card-kpi bg-white p-4 mb-5">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
+        <h4 class="fw-bold mb-2">📋 Tabela Analítica de Clientes</h4>
+        
+        <form method="get" class="d-flex flex-wrap gap-2 align-items-center">
+            <input type="hidden" name="visao" value="{{ visao_selecionada }}">
+            
+            <span class="small text-muted fw-bold">Curvas:</span>
+            {% for c in curvas_disponiveis %}
+                <div class="form-check form-check-inline m-0">
+                    <input class="form-check-input" type="checkbox" name="curva" value="{{ c }}" id="c_{{ c }}"
+                           {% if c in curvas_selecionadas %}checked{% endif %} onchange="this.form.submit()">
+                    <label class="form-check-label small" for="c_{{ c }}">{{ c }}</label>
+                </div>
+            {% endfor %}
+
+            <span class="small text-muted fw-bold ms-3">Status:</span>
+            {% for s in status_disponiveis %}
+                <div class="form-check form-check-inline m-0">
+                    <input class="form-check-input" type="checkbox" name="status" value="{{ s }}" id="s_{{ s }}"
+                           {% if s in status_selecionados %}checked{% endif %} onchange="this.form.submit()">
+                    <label class="form-check-label small" for="s_{{ s }}">{{ s }}</label>
+                </div>
+            {% endfor %}
+
+            {% if curvas_selecionadas or status_selecionados %}
+                <a href="?visao={{ visao_selecionada }}" class="btn btn-sm btn-link text-danger">Limpar Filtros</a>
+            {% endif %}
+        </form>
+    </div>
+
+    <div class="table-responsive">
+        <table id="tabelaClientes" class="table table-hover align-middle w-100">
+            <thead class="table-light">
+                <tr>
+                    <th>Empresa</th>
+                    <th>Vendedora</th>
+                    <th class="text-center">Curva</th>
+                    <th class="text-center">Status</th>
+                    <th class="text-end">Fat. Médio Mensal (6m)</th>
+                    <th class="text-center">Dias Inativos</th>
+                    <th class="text-center">Última Venda</th>
+                    <th class="text-end">Fat. Total (Visão)</th>
+                    <th class="text-center">Qtd Vendas</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in tabela_clientes %}
+                <tr>
+                    <td class="fw-bold">{{ row.cliente_nome }}</td>
+                    <td>{{ row.Vendedora|default:"-" }}</td>
+                    <td class="text-center">
+                        <span class="badge badge-curva-{{ row.Curva }} px-2 py-1">{{ row.Curva }}</span>
+                    </td>
+                    <td class="text-center">
+                        {% if row.Status == 'Ativo' %}
+                            <span class="badge bg-success">{{ row.Status }}</span>
+                        {% elif row.Status == 'Em Risco' %}
+                            <span class="badge bg-warning text-dark">{{ row.Status }}</span>
+                        {% elif row.Status == 'Novo' %}
+                            <span class="badge bg-info text-dark">{{ row.Status }}</span>
+                        {% else %}
+                            <span class="badge bg-danger">{{ row.Status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end">R$ {{ row.Ticket_Medio_6m|floatformat:2 }}</td>
+                    <td class="text-center fw-bold">{{ row.Dias_Inatividade }} d</td>
+                    <td class="text-center">{{ row.Ultima_Venda_str }}</td>
+                    <td class="text-end fw-bold text-success">R$ {{ row.Faturamento_Total|floatformat:2 }}</td>
+                    <td class="text-center">{{ row.Num_Vendas }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="9" class="text-center py-4 text-muted">Nenhum cliente encontrado com os critérios aplicados.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    $(document).ready(function() {
+        $('#tabelaClientes').DataTable({
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json'
+            },
+            pageLength: 25,
+            order: []
+        });
+    });
+</script>
+{% endblock %}

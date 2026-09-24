@@ -57,7 +57,14 @@ class Vendedor(models.Model):
         verbose_name="Nome no PipeRun (CRM)",
         help_text="Se vazio, o sistema tentará o vínculo automático na próxima sincronização."
     )
-    ativo = models.BooleanField(default=True, verbose_name="Ativo no Dashboard")
+    ativo = models.BooleanField(
+        default=True, 
+        verbose_name="Ativo no Dashboard (Seletor)"
+    )
+    ativo_ranking = models.BooleanField(
+        default=True, 
+        verbose_name="Ativo no Ranking"
+    )
 
     class Meta:
         verbose_name = "Vendedor (Vínculo)"

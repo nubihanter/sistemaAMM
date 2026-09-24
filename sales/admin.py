@@ -9,7 +9,7 @@ class MetaVendedorAdmin(admin.ModelAdmin):
 
 @admin.register(Vendedor)
 class VendedorAdmin(admin.ModelAdmin):
-    list_display = ("nome_hardness", "nome_piperun", "ativo")
-    list_editable = ("nome_piperun", "ativo")
+    list_display = ("nome_hardness", "nome_piperun", "ativo", "ativo_ranking")
+    list_editable = ("nome_piperun", "ativo", "ativo_ranking")
     search_fields = ("nome_hardness", "nome_piperun")
-    list_filter = ("ativo",)
+    list_filter = ("ativo", "ativo_ranking")

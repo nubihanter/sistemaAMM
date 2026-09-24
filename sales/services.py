@@ -125,10 +125,10 @@ def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
                     "cliente_nome": str(item.get("D024_Nome_Empresa", item.get("D024_Nome_Fantasia", ""))).strip(),
                     "cliente_documento": str(item.get("D024_Id", "")).strip(),
                     "data_emissao": parse_data(item.get("T007_Data_Emissao")),
-                    "valor_total": parse_decimal(item.get("T007_Valor_Total")),
+                    "valor_total": parse_decimal(item.get("T007_Valor_Total_Produtos")),
                     "cfop": str(item.get("D006_Codigo_CFOP", "")).strip(),
                     "status": status,
-                    "vendedor_nome": str(item.get("vendedor.C007_Primeiro_Nome", "")).strip().upper(),
+                    "vendedor_nome": str(item.get("vendedor.C007_Primeiro_Nome", "DESCONHECIDO")).strip().upper(),
                     "dados_brutos": {k: (None if pd.isna(v) else v) for k, v in item.items()},
                 }
 
