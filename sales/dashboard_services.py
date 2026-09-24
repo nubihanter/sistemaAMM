@@ -10,9 +10,6 @@ from .models import MetaVendedor, Vendedor
 from integrations.piperun import PipeRunAPI
 
 USUARIO_PIPERUN_META_EMPRESA = "MARCELO NERIS"
-VENDEDORES_OCULTOS = ["DESCONHECIDO", "LETICIA", "THIAGO", "VERONICA", "LENIRA", "RODRIGO", "ROBSON"]
-EXCLUDE_FROM_RANKING = ["MARCELO", "INANJARA", "JUSLIENE", "MAYARA", "ANDRE", "WILMA"]
-
 
 def normalizar_nome(nome):
     if not nome:

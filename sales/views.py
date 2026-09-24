@@ -6,7 +6,7 @@ import pandas as pd
 from accounts.decorators import roles_required
 from django.contrib.auth.decorators import login_required
 from .models import NotaFiscal, Vendedor
-from .dashboard_services import gerar_metricas_e_graficos, VENDEDORES_OCULTOS
+from .dashboard_services import gerar_metricas_e_graficos
 from .dashboard_services import gerar_analise_clientes
 
 @roles_required('ADMINISTRADOR', 'SUPERVISOR', 'VENDEDOR')
