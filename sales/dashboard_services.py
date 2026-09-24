@@ -428,6 +428,13 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
 
     df_clientes['Status'] = df_clientes.apply(definir_status, axis=1)
 
+    curvas_aplicadas = filtros_curva or ['AA', 'A', 'B']
+    status_aplicados = filtros_status or ['Novo', 'Ativo', 'Em Risco', 'Inativo']
+    df_filtrado = df_clientes[
+        df_clientes['Curva'].isin(curvas_aplicadas) &
+        df_clientes['Status'].isin(status_aplicados)
+    ].copy()
+
     # 5. KPIs da Carteira
     kpis_carteira = {
         "total_clientes": len(df_clientes),
@@ -442,7 +449,7 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
     # 6. Gráficos de Prioridade (Curvas AA, A e B)[cite: 6]
     grafico_status_html = ""
     grafico_matriz_html = ""
-    df_prioridade = df_clientes[df_clientes['Curva'].isin(['AA', 'A', 'B'])].copy()
+    df_prioridade = df_filtrado
 
     if not df_prioridade.empty:
         # Gráfico 1: Status por Curva[cite: 6]
@@ -495,10 +502,10 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
 
     # 7. Preparação da Tabela Analítica[cite: 6]
     df_tabela = df_clientes.copy()
-    if filtros_curva:
-        df_tabela = df_tabela[df_tabela['Curva'].isin(filtros_curva)]
-    if filtros_status:
-        df_tabela = df_tabela[df_tabela['Status'].isin(filtros_status)]
+    df_tabela = df_tabela[
+        df_tabela['Curva'].isin(curvas_aplicadas) &
+        df_tabela['Status'].isin(status_aplicados)
+    ]
 
     df_tabela['Ultima_Venda_str'] = df_tabela['Ultima_Venda'].dt.strftime('%d/%m/%Y')
 

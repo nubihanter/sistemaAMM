@@ -106,8 +106,8 @@ def analise_clientes_view(request):
         vendedores_disponiveis = sorted(nomes_unicos)
 
     # 4. Captura filtros opcionais de Curva e Status
-    curvas_selecionadas = request.GET.getlist('curva')
-    status_selecionados = request.GET.getlist('status')
+    curvas_selecionadas = request.GET.getlist('curva') or ['AA', 'A', 'B']
+    status_selecionados = request.GET.getlist('status') or ['Novo', 'Ativo', 'Em Risco', 'Inativo']
 
     # 5. Executa os cálculos e gera os gráficos
     kpis, graf_status, graf_matriz, df_tabela = gerar_analise_clientes(
