@@ -42,3 +42,28 @@ class MetaVendedor(models.Model):
 
     def __str__(self):
         return f"{self.vendedor_nome} - {self.mes:02d}/{self.ano}: R$ {self.valor:,.2f}"
+
+class Vendedor(models.Model):
+    nome_hardness = models.CharField(
+        max_length=100, 
+        unique=True, 
+        db_index=True, 
+        verbose_name="Nome no Hardness (ERP)"
+    )
+    nome_piperun = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True, 
+        verbose_name="Nome no PipeRun (CRM)",
+        help_text="Se vazio, o sistema tentará o vínculo automático na próxima sincronização."
+    )
+    ativo = models.BooleanField(default=True, verbose_name="Ativo no Dashboard")
+
+    class Meta:
+        verbose_name = "Vendedor (Vínculo)"
+        verbose_name_plural = "Vendedores (Vínculos)"
+        ordering = ["nome_hardness"]
+
+    def __str__(self):
+        piperun_str = self.nome_piperun or "⚠️ SEM VÍNCULO"
+        return f"{self.nome_hardness} ➔ {piperun_str}"

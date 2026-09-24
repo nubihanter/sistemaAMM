@@ -6,9 +6,11 @@ from django.utils import timezone
 from django.db.models import Max
 from integrations.piperun import PipeRunAPI
 from integrations.hardness import HardnessAPI
-from .models import NotaFiscal,MetaVendedor
+from .models import NotaFiscal,MetaVendedor, Vendedor
+import unicodedata
 from pathlib import Path
 import json
+from django.db.models import Q
 
 def parse_decimal(valor):
     if valor is None or pd.isna(valor) or str(valor).strip() == "":
@@ -93,6 +95,9 @@ def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
         if df_notas.empty:
             print(f"ℹ️ Nenhuma nota encontrada para {nome_empresa} no período.")
             continue
+        else:
+            vendedores_lote = df_notas["vendedor.C007_Primeiro_Nome"].dropna().unique()
+            cadastrar_vendedores_hardness(vendedores_lote)
 
         criadas_empresa = 0
         atualizadas_empresa = 0
@@ -197,60 +202,90 @@ def carregar_dados_metas():
 
 def sincronizar_metas_piperun():
     """
-    Lê a estrutura de metas do PipeRun e grava no banco de dados
-    (1 registro por vendedor, mês e ano, mantendo o maior goal_id).
+    Busca as metas via PipeRunAPI usando a lógica validada do getGoalsPipeRun
+    e grava diretamente no banco de dados (MetaVendedor), sem gerar ou ler JSON.
     """
-    dados_metas = carregar_dados_metas()
+    vincular_vendedores_piperun_automatico()
 
-    if not dados_metas or not isinstance(dados_metas, list):
-        print("⚠️ Nenhuma meta encontrada para sincronização.")
+    api = PipeRunAPI()
+    print("\n" + "="*50)
+    print("🎯 Sincronizando Metas do PipeRun diretamente no Banco...")
+    print("="*50)
+
+    # 1. Mapear ID -> Nome de Usuário
+    users_response = api.get_users()
+    users_map = {}
+    if users_response and users_response.get("data"):
+        for user in users_response["data"]:
+            users_map[user["id"]] = user.get("name", f"Usuário {user['id']}")
+        print(f"✓ {len(users_map)} usuários identificados no PipeRun.")
+
+    # 2. Buscar lista de metas
+    all_goals = api.get_goals(show=100)
+    goals_list = all_goals.get("data", []) if all_goals else []
+
+    if not goals_list:
+        print("⚠️ Nenhuma meta retornada pelo PipeRun.")
         return 0, 0
 
-    criadas = 0
-    atualizadas = 0
+    print(f"✓ {len(goals_list)} metas encontradas. Processando valores...")
 
-    for vendedor_info in dados_metas:
-        nome_vendedor = str(vendedor_info.get("nome", "")).strip().upper()
-        if not nome_vendedor:
+    # Dicionário para reter a meta de maior goal_id por (vendedor, mes, ano)
+    metas_por_periodo = {}
+
+    # 3. Processar cada meta e extrair byUser via endpoint /stats
+    for goal in goals_list:
+        goal_id = goal.get("id")
+        goal_title = goal.get("title", "N/A")
+        start_date = goal.get("start_at") or goal.get("start_date") or goal.get("created_at")
+
+        if not start_date:
             continue
 
-        metas_lista = vendedor_info.get("metas", [])
+        try:
+            dt_inicio = pd.to_datetime(start_date)
+            mes = dt_inicio.month
+            ano = dt_inicio.year
+        except Exception:
+            continue
 
-        # Dicionário para reter a meta de maior goal_id por (mês, ano)
-        metas_por_periodo = {}
+        stats = api.get_goal_stats(goal_id)
+        if not stats or not stats.get("data") or not stats["data"].get("processed"):
+            continue
 
-        for g in metas_lista:
-            data_inicio_str = g.get("data_inicio")
-            if not data_inicio_str:
+        processed = stats["data"]["processed"]
+        for item in processed:
+            by_user = item.get("byUser", {})
+            user_id = by_user.get("user_id")
+            valor_raw = by_user.get("value", "0")
+
+            if not user_id:
                 continue
 
-            try:
-                dt_inicio = pd.to_datetime(data_inicio_str)
-                mes = dt_inicio.month
-                ano = dt_inicio.year
-            except Exception:
-                continue
+            user_name = users_map.get(user_id, f"Usuário {user_id}")
+            nome_vendedor = str(user_name).strip().upper()
 
-            chave_periodo = (mes, ano)
-            goal_id = g.get("goal_id", 0)
-
-            # Extrai o valor real da meta
-            valor_bruto = g.get("valor", 0)
             try:
-                valor_dec = Decimal(str(valor_bruto))
+                valor_dec = Decimal(str(valor_raw))
             except Exception:
                 valor_dec = Decimal("0.00")
 
-            # Se ainda não adicionou esse período ou encontrou uma meta com ID mais recente
-            if chave_periodo not in metas_por_periodo or goal_id > metas_por_periodo[chave_periodo]["goal_id"]:
-                metas_por_periodo[chave_periodo] = {
+            chave = (nome_vendedor, mes, ano)
+
+            # Se houver mais de uma meta para o mesmo período, mantém a de maior ID (mais recente)
+            if chave not in metas_por_periodo or goal_id > metas_por_periodo[chave]["goal_id"]:
+                metas_por_periodo[chave] = {
                     "goal_id": goal_id,
                     "valor": valor_dec,
-                    "titulo_meta": g.get("goal_title", "")
+                    "titulo_meta": goal_title
                 }
 
-        # Grava na tabela MetaVendedor
-        for (mes, ano), info in metas_por_periodo.items():
+    # 4. Gravar diretamente na tabela MetaVendedor
+    criadas = 0
+    atualizadas = 0
+
+    with transaction.atomic():
+        for (nome_vendedor, mes, ano), info in metas_por_periodo.items():
             _, created = MetaVendedor.objects.update_or_create(
                 vendedor_nome=nome_vendedor,
                 mes=mes,
@@ -260,11 +295,64 @@ def sincronizar_metas_piperun():
                     "titulo_meta": info["titulo_meta"],
                 }
             )
-
             if created:
                 criadas += 1
             else:
                 atualizadas += 1
 
-    print(f"🎯 Metas sincronizadas no SQLite! Criadas: {criadas} | Atualizadas: {atualizadas}")
+    print(f"✅ Metas gravadas no banco: {criadas} criadas | {atualizadas} atualizadas.\n")
     return criadas, atualizadas
+
+def normalizar_nome(nome):
+    """Extrai apenas o primeiro nome em maiúsculas sem acentos."""
+    if not nome:
+        return ""
+    nome_nfd = unicodedata.normalize('NFD', str(nome).strip().upper())
+    sem_acentos = ''.join(char for char in nome_nfd if unicodedata.category(char) != 'Mn')
+    partes = sem_acentos.split()
+    return partes[0] if partes else ""
+
+
+def cadastrar_vendedores_hardness(nomes_vendedores):
+    """
+    Garante que todos os nomes únicos vindos do Hardness existam na tabela Vendedor.
+    """
+    for nome in nomes_vendedores:
+        nome_limpo = str(nome).strip().upper()
+        if nome_limpo and nome_limpo != "NAN":
+            Vendedor.objects.get_or_create(nome_hardness=nome_limpo)
+
+
+def vincular_vendedores_piperun_automatico():
+    """
+    Para cada vendedor cujo nome_piperun está vazio, tenta atribuir
+    automaticamente buscando os usuários cadastrados no PipeRun.
+    Se já tiver registro no field, pula esse passo.
+    """
+    vendedores_sem_vinculo = Vendedor.objects.filter(
+        Q(nome_piperun__isnull=True) | Q(nome_piperun="")
+    )
+
+    if not vendedores_sem_vinculo.exists():
+        return
+
+    # Busca a lista de usuários no PipeRun usando a lib validada
+    api = PipeRunAPI()
+    users_resp = api.get_users()
+    if not isinstance(users_resp, dict) or "data" not in users_resp:
+        return
+
+    usuarios_piperun = [u.get("name", "") for u in users_resp["data"] if u.get("name")]
+
+    for vend in vendedores_sem_vinculo:
+        primeiro_nome_hardness = normalizar_nome(vend.nome_hardness)
+        if not primeiro_nome_hardness:
+            continue
+
+        # Procura um match no PipeRun pelo primeiro nome normalizado
+        for nome_pr in usuarios_piperun:
+            if normalizar_nome(nome_pr) == primeiro_nome_hardness:
+                vend.nome_piperun = str(nome_pr).strip().upper()
+                vend.save()
+                print(f"🔗 Vínculo automático criado: {vend.nome_hardness} ➔ {vend.nome_piperun}")
+                break

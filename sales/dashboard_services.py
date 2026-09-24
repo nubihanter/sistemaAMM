@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from django.core.cache import cache
-from .models import MetaVendedor
+from .models import MetaVendedor, Vendedor
 
 from integrations.piperun import PipeRunAPI
 
@@ -21,22 +21,28 @@ def normalizar_nome(nome):
     sem_acentos = ''.join(c for c in nome_nfd if unicodedata.category(c) != 'Mn')
     return ' '.join(sem_acentos.split()).split()[0]
 
+
 def obter_meta_vendedor(vendedora_selecionada, mes, ano):
     """
-    Busca a meta mensal gravada no banco de dados.
+    Busca a meta mensal cruzando nome_hardness -> nome_piperun -> MetaVendedor.
     """
     if vendedora_selecionada == "EMPRESA":
-        nome_alvo = normalizar_nome(USUARIO_PIPERUN_META_EMPRESA)
+        nome_piperun_alvo = normalizar_nome(USUARIO_PIPERUN_META_EMPRESA)
     else:
-        nome_alvo = normalizar_nome(vendedora_selecionada)
+        # Busca o cadastro do vendedor pelo nome do Hardness
+        vend = Vendedor.objects.filter(nome_hardness=vendedora_selecionada.strip().upper()).first()
+        if vend and vend.nome_piperun:
+            nome_piperun_alvo = normalizar_nome(vend.nome_piperun)
+        else:
+            # Fallback caso ainda não esteja vinculado: usa o próprio nome normalizado
+            nome_piperun_alvo = normalizar_nome(vendedora_selecionada)
 
-    # Busca todas as metas do mês/ano
+    # Busca a meta cadastrada no banco para o mês/ano
     metas_mes = MetaVendedor.objects.filter(mes=mes, ano=ano)
-    
     for m in metas_mes:
-        if normalizar_nome(m.vendedor_nome) == nome_alvo:
+        if normalizar_nome(m.vendedor_nome) == nome_piperun_alvo:
             return float(m.valor)
-            
+
     return 0.0
 
 def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_selecionado):
