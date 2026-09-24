@@ -67,12 +67,14 @@
             <h3 class="fw-bold text-info mb-0">{{ kpis.prioritarios|default:"0" }}</h3>
         </div>
     </div>
+    {% if visao_selecionada == "EMPRESA" %}
     <div class="col-md-2 col-6">
         <div class="card card-kpi p-3 bg-white border-start border-secondary border-4">
             <span class="text-muted small">Fat. da Carteira</span>
             <h5 class="fw-bold text-secondary mb-0 mt-1">{{ kpis.faturamento_carteira|default:"R$ 0,00" }}</h5>
         </div>
     </div>
+    {% endif %}
 </div>
 
 <!-- Gráficos de Foco e Matriz de Risco -->
@@ -134,7 +136,7 @@
             <thead class="table-light">
                 <tr>
                     <th>Empresa</th>
-                    <th>Vendedora</th>
+                    <th>Vendedor</th>
                     <th class="text-center">Curva</th>
                     <th class="text-center">Status</th>
                     <th class="text-end">Fat. Médio Mensal (6m)</th>

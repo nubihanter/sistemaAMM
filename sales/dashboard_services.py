@@ -161,7 +161,7 @@ def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_se
 
             ranking_data.append({
                 "Posição": 0,
-                "Vendedora": vend,
+                "Vendedor": vend,
                 "% Meta": pct_meta,
                 "Total_Vendas": total_vend,
                 "Meta": meta_vend,
@@ -171,7 +171,7 @@ def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_se
     if ranking_data:
         df_rank = pd.DataFrame(ranking_data)
         df_com_meta = df_rank[df_rank['tem_meta']].copy().sort_values('% Meta', ascending=False).reset_index(drop=True)
-        df_sem_meta = df_rank[~df_rank['tem_meta']].copy().sort_values('Vendedora', ascending=True).reset_index(drop=True)
+        df_sem_meta = df_rank[~df_rank['tem_meta']].copy().sort_values('Vendedor', ascending=True).reset_index(drop=True)
 
         df_com_meta['Posição'] = range(1, len(df_com_meta) + 1)
         df_sem_meta['Posição'] = range(len(df_com_meta) + 1, len(df_com_meta) + len(df_sem_meta) + 1)
@@ -180,7 +180,7 @@ def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_se
 
         def formata_nome(row):
             pos = int(row['Posição'])
-            nome = row['Vendedora']
+            nome = row['Vendedor']
             if pos == 1:
                 return f"🥇 {nome}"
             elif pos == 2:
@@ -206,7 +206,7 @@ def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_se
             x='Nome_Display',
             y='% Meta',
             title=f"🏆 Ranking de Vendas - % da Meta Atingida ({data_inicio.strftime('%m/%Y')})",
-            labels={'% Meta': '% da Meta', 'Nome_Display': 'Vendedora'},
+            labels={'% Meta': '% da Meta', 'Nome_Display': 'Vendedor'},
             color='Cor',
             color_discrete_map='identity',
             text='% Meta'
@@ -231,6 +231,35 @@ def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_se
 FATURAMENTO_MINIMO_INATIVIDADE = 500.0
 
 
+def calcular_ticket_medio_6m_clientes(df):
+    """
+    Calcula o faturamento médio mensal retroativo à ÚLTIMA VENDA de cada cliente.
+    Se o cliente tiver histórico menor que 6 meses, divide apenas pelos meses decorridos.
+    """
+    ticket_map = {}
+    df_ordenado = df.sort_values('data_emissao')
+
+    for cliente, grupo in df_ordenado.groupby('cliente_nome'):
+        ult_data = grupo['data_emissao'].max()
+        prim_data = grupo['data_emissao'].min()
+
+        # Janela de 6 meses retroativos à última compra do cliente
+        janela_inicio = ult_data - pd.Timedelta(days=180)
+        vendas_janela = grupo[grupo['data_emissao'] >= janela_inicio]['valor_total'].sum()
+
+        # Se o cliente já comprava antes da janela de 180 dias, divide por 6 meses
+        if prim_data <= janela_inicio:
+            meses_divisor = 6.0
+        else:
+            # Calcula a quantidade de meses entre a primeira e a última venda
+            meses_decorridos = (ult_data.year - prim_data.year) * 12 + (ult_data.month - prim_data.month) + 1
+            meses_divisor = min(6.0, max(1.0, float(meses_decorridos)))
+
+        ticket_map[cliente] = float(vendas_janela) / meses_divisor
+
+    return ticket_map
+
+
 def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=None, filtros_status=None):
     """Gera KPIs, gráficos de risco e a tabela analítica de clientes."""
     if df.empty or 'cliente_nome' not in df.columns:
@@ -252,16 +281,13 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
     df_global_datas = df_ordenado_global.groupby('cliente_nome').agg(
         Ultima_Venda=('data_emissao', 'max'),
         Primeira_Venda=('data_emissao', 'min'),
-        Vendedora=('vendedor_nome', get_ultimo_vendedor)  # <-- Vendedor da última venda realizada
+        Vendedora=('vendedor_nome', get_ultimo_vendedor)  # Vendedor da última venda
     ).reset_index()
 
-    # Cálculo do Faturamento Médio Mensal dos últimos 6 meses (180 dias)
-    data_maxima_base = df['data_emissao'].max()
-    seis_meses_antes = data_maxima_base - pd.Timedelta(days=180)
-    df_ultimos_6m = df[df['data_emissao'] >= seis_meses_antes]
-    ticket_6m_map = (df_ultimos_6m.groupby('cliente_nome')['valor_total'].sum() / 6.0).to_dict()
+    # 2. Cálculo do Ticket Médio 6m Individual por Cliente
+    ticket_6m_map = calcular_ticket_medio_6m_clientes(df)
 
-    # 2. Filtragem da Visão (EMPRESA ou Vendedor Específico)
+    # 3. Filtragem da Visão (EMPRESA = Todos; ou Vendedor Específica)
     if vendedora_selecionada and vendedora_selecionada != "EMPRESA":
         df_visao = df[df['vendedor_nome'] == vendedora_selecionada].copy()
     else:
@@ -270,19 +296,22 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
     if df_visao.empty:
         return {}, "", "", pd.DataFrame()
 
-    # 3. Consolidação por Cliente (Totais da visão + Vendedor da última venda)
+    # 4. Consolidação por Cliente na visão selecionada
     df_clientes = df_visao.groupby('cliente_nome').agg(
         Faturamento_Total=('valor_total', 'sum'),
         Num_Vendas=('valor_total', 'count')
     ).reset_index()
 
-    # Junta com os dados globais (trazendo a última data e o vendedor da última venda)
+    # Une totais da visão com os metadados globais do cliente
     df_clientes = pd.merge(df_clientes, df_global_datas, on='cliente_nome', how='left')
 
-    # Filtro de faturamento mínimo
+    # Filtro de faturamento mínimo acumulado
     df_clientes = df_clientes[df_clientes['Faturamento_Total'] >= FATURAMENTO_MINIMO_INATIVIDADE].copy()
     if df_clientes.empty:
         return {}, "", "", pd.DataFrame()
+
+    data_maxima_base = df['data_emissao'].max()
+    ano_vigente = data_maxima_base.year
 
     # Tipagem numérica estrita
     df_clientes['Dias_Inatividade'] = (data_maxima_base - df_clientes['Ultima_Venda']).dt.days.fillna(0).astype(int)
@@ -300,7 +329,6 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
     df_clientes['Curva'] = df_clientes['Ticket_Medio_6m'].apply(classificar_curva)
 
     # Classificação de Status[cite: 6]
-    ano_vigente = data_maxima_base.year
     def definir_status(row):
         if row['Primeira_Venda'].year == ano_vigente:
             return 'Novo'
@@ -312,7 +340,7 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
 
     df_clientes['Status'] = df_clientes.apply(definir_status, axis=1)
 
-    # 4. KPIs da Carteira
+    # 5. KPIs da Carteira
     kpis_carteira = {
         "total_clientes": len(df_clientes),
         "clientes_ativos": len(df_clientes[df_clientes['Status'] == 'Ativo']),
@@ -323,7 +351,7 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
         "faturamento_carteira": f"R$ {df_clientes['Faturamento_Total'].sum():,.2f}"
     }
 
-    # 5. Gráficos de Prioridade (Curvas AA, A e B)[cite: 6]
+    # 6. Gráficos de Prioridade (Curvas AA, A e B)[cite: 6]
     grafico_status_html = ""
     grafico_matriz_html = ""
     df_prioridade = df_clientes[df_clientes['Curva'].isin(['AA', 'A', 'B'])].copy()
@@ -344,10 +372,8 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
         grafico_status_html = fig_status.to_html(full_html=False, include_plotlyjs=False)
 
         # Gráfico 2: Matriz de Risco (Inatividade vs Ticket 6m)[cite: 6]
-        # Cria uma coluna de tamanho segura para evitar quebra no Plotly
         df_prioridade['Tamanho_Bolha'] = df_prioridade['Faturamento_Total'].clip(lower=100.0)
-        print(df_prioridade.head())
-        
+
         fig_scatter = px.scatter(
             df_prioridade,
             x='Dias_Inatividade',
@@ -367,21 +393,25 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
             category_orders={"Status": ["Novo", "Ativo", "Em Risco", "Inativo"]},
             color_discrete_map={"Novo": "#17becf", "Ativo": "#2ca02c", "Em Risco": "#ff7f0e", "Inativo": "#d62728"}
         )
-        # Se for Plotly:
-        fig_scatter.update_traces(marker=dict(sizemode='area', sizeref=2.*max(df_prioridade['Tamanho_Bolha'])/(40.**2), sizemin=4))
-        fig_scatter.add_vline(x=30, line_dash="dash", line_color="green", annotation_text="Ativos (30d)")
-        fig_scatter.add_vline(x=90, line_dash="dash", line_color="red", annotation_text="Inativos (90d)")
+        fig_scatter.update_traces(
+            marker=dict(
+                sizemode='area',
+                sizeref=2. * max(df_prioridade['Tamanho_Bolha']) / (40. ** 2),
+                sizemin=4
+            )
+        )
+        fig_scatter.add_vline(x=30, line_dash="dash", line_color="green", annotation_text="Ativos", annotation_position="top left")
+        fig_scatter.add_vline(x=90, line_dash="dash", line_color="red", annotation_text="Inativos", annotation_position="top right")
         fig_scatter.update_layout(height=380, margin=dict(t=40, b=20, l=20, r=20))
-        grafico_matriz_html = fig_scatter.to_html(full_html=False, include_plotlyjs=False)
+        grafico_matriz_html = fig_scatter.to_html(full_html=False, include_plotlyjs=True)
 
-    # 6. Preparação da Tabela Analítica[cite: 6]
+    # 7. Preparação da Tabela Analítica[cite: 6]
     df_tabela = df_clientes.copy()
     if filtros_curva:
         df_tabela = df_tabela[df_tabela['Curva'].isin(filtros_curva)]
     if filtros_status:
         df_tabela = df_tabela[df_tabela['Status'].isin(filtros_status)]
 
-    # Formata a data como string pronta para a tabela
     df_tabela['Ultima_Venda_str'] = df_tabela['Ultima_Venda'].dt.strftime('%d/%m/%Y')
 
     # Ordenação por Curva e Inatividade[cite: 6]
