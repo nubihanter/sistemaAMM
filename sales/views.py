@@ -83,6 +83,10 @@ def dashboard_vendas(request):
 
 @login_required
 def analise_clientes_view(request):
+    user = request.user
+    if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS") and not user.is_superuser:
+        return redirect("dashboard_estoque")
+
     # 1. Pega a visão selecionada (Padrão: EMPRESA)
     visao_selecionada = request.GET.get('visao', 'EMPRESA').strip().upper()
 
