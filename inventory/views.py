@@ -169,8 +169,15 @@ def atualizar_parametros_produto_view(request):
 @require_POST
 def sincronizar_estoque_manual_view(request):
     """Dispara a sincronização incremental de estoque e itens vendidos do Hardness."""
+    from sales.services import registrar_execucao_sincronizacao
+
     try:
-        res = sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=60)
+        _, res = registrar_execucao_sincronizacao(
+            tipo="ESTOQUE_HARDNESS",
+            funcao_sync=lambda: sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=60),
+            origem="MANUAL_PAINEL",
+            usuario=request.user.username,
+        )
         messages.success(
             request,
             f"Sincronização concluída! Estoque: {res['estoque_criados']} novos / {res['estoque_atualizados']} atualizados | "

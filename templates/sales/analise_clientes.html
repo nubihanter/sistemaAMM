@@ -65,44 +65,54 @@
 
 {% block content %}
 <div class="row mb-3 align-items-center g-2">
-    <div class="col-md-7">
+    <div class="col-lg-6">
         <h2 class="fw-bold mb-0">👥 Análise de Carteira de Clientes</h2>
         <p class="text-muted mb-0">
             Classificação por curva de faturamento médio mensal (6m), tempo de inatividade e vínculo pelo vendedor da última compra.
         </p>
     </div>
 
-    <!-- Seletor de Visão (Respeitando a trava de perfil do Vendedor) -->
-    <div class="col-md-5">
-        {% if pode_selecionar %}
-        <form method="get" id="formVisao" class="d-flex gap-2 justify-content-md-end">
-            {% for c in curvas_selecionadas %}
-                <input type="hidden" name="curva" value="{{ c }}">
-            {% endfor %}
-            {% for s in status_selecionados %}
-                <input type="hidden" name="status" value="{{ s }}">
-            {% endfor %}
+    <!-- Seletor de Visão e Botões de Exportação (Respeitando a trava de perfil do Vendedor) -->
+    <div class="col-lg-6">
+        <div class="d-flex flex-wrap gap-2 justify-content-lg-end align-items-center no-print">
+            {% if pode_selecionar %}
+            <form method="get" id="formVisao" class="m-0">
+                {% for c in curvas_selecionadas %}
+                    <input type="hidden" name="curva" value="{{ c }}">
+                {% endfor %}
+                {% for s in status_selecionados %}
+                    <input type="hidden" name="status" value="{{ s }}">
+                {% endfor %}
 
-            <div class="input-group">
-                <span class="input-group-text bg-white fw-bold">👤 Carteira:</span>
-                <select name="visao" class="form-select" onchange="document.getElementById('formVisao').submit();">
-                    <option value="EMPRESA" {% if visao_selecionada == 'EMPRESA' %}selected{% endif %}>
-                        🏢 EMPRESA (Toda a Base)
-                    </option>
-                    <optgroup label="Vendedores Ativos (Dono da Última Venda)">
-                        {% for vend in vendedores_disponiveis %}
-                            <option value="{{ vend }}" {% if visao_selecionada == vend %}selected{% endif %}>{{ vend }}</option>
-                        {% endfor %}
-                    </optgroup>
-                </select>
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text bg-white fw-bold">👤 Carteira:</span>
+                    <select name="visao" class="form-select" onchange="document.getElementById('formVisao').submit();">
+                        <option value="EMPRESA" {% if visao_selecionada == 'EMPRESA' %}selected{% endif %}>
+                            🏢 EMPRESA (Toda a Base)
+                        </option>
+                        <optgroup label="Vendedores Ativos (Dono da Última Venda)">
+                            {% for vend in vendedores_disponiveis %}
+                                <option value="{{ vend }}" {% if visao_selecionada == vend %}selected{% endif %}>{{ vend }}</option>
+                            {% endfor %}
+                        </optgroup>
+                    </select>
+                </div>
+            </form>
+            {% else %}
+            <div class="input-group input-group-sm" style="max-width: 260px;">
+                <span class="input-group-text bg-white fw-bold">👤 Sua Carteira:</span>
+                <input type="text" class="form-control bg-light fw-bold" value="{{ visao_selecionada }}" readonly>
             </div>
-        </form>
-        {% else %}
-        <div class="input-group">
-            <span class="input-group-text bg-white fw-bold">👤 Sua Carteira:</span>
-            <input type="text" class="form-control bg-light fw-bold" value="{{ visao_selecionada }}" readonly>
+            {% endif %}
+
+            <a href="{% url 'exportar_clientes_excel' %}?visao={{ visao_selecionada|urlencode }}{% for c in curvas_selecionadas %}&curva={{ c|urlencode }}{% endfor %}{% for s in status_selecionados %}&status={{ s|urlencode }}{% endfor %}"
+               class="btn btn-success btn-sm fw-semibold shadow-sm">
+                📥 Exportar Excel (.xlsx)
+            </a>
+            <button type="button" onclick="window.print()" class="btn btn-outline-dark btn-sm fw-semibold shadow-sm">
+                🖨️ Exportar PDF
+            </button>
         </div>
-        {% endif %}
     </div>
 </div>
 

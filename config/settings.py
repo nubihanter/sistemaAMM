@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 
     # 2. Seus Apps do Sistema de EPIs
+    'django_apscheduler',
     'accounts.apps.AccountsConfig',
     'inventory.apps.InventoryConfig',
     'sales.apps.SalesConfig',

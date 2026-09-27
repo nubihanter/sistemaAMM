@@ -1,5 +1,6 @@
 from django.contrib import admin
-from .models import NotaFiscal, MetaVendedor, Vendedor
+from .models import NotaFiscal, MetaVendedor, Vendedor, LogSincronizacao
+
 
 @admin.register(MetaVendedor)
 class MetaVendedorAdmin(admin.ModelAdmin):
@@ -7,9 +8,38 @@ class MetaVendedorAdmin(admin.ModelAdmin):
     list_filter = ("ano", "mes", "vendedor_nome")
     search_fields = ("vendedor_nome", "titulo_meta")
 
+
 @admin.register(Vendedor)
 class VendedorAdmin(admin.ModelAdmin):
     list_display = ("nome_hardness", "nome_piperun", "ativo", "ativo_ranking")
     list_editable = ("nome_piperun", "ativo", "ativo_ranking")
     search_fields = ("nome_hardness", "nome_piperun")
     list_filter = ("ativo", "ativo_ranking")
+
+
+@admin.register(LogSincronizacao)
+class LogSincronizacaoAdmin(admin.ModelAdmin):
+    list_display = (
+        "iniciado_em",
+        "tipo",
+        "origem",
+        "status",
+        "usuario",
+        "duracao_segundos",
+        "registros_criados",
+        "registros_atualizados",
+    )
+    list_filter = ("tipo", "origem", "status")
+    search_fields = ("usuario", "mensagem")
+    readonly_fields = (
+        "tipo",
+        "origem",
+        "status",
+        "usuario",
+        "iniciado_em",
+        "finalizado_em",
+        "duracao_segundos",
+        "registros_criados",
+        "registros_atualizados",
+        "mensagem",
+    )

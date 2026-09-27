@@ -1,199 +1,239 @@
 import re
 import json
+import time
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 from decouple import config
 
-HARDNESS_USER = config("HARDNESS_USER")
-HARDNESS_PASSWORD = config("HARDNESS_PASSWORD")
-HARDNESS_BASE_URL = config("HARDNESS_BASE_URL")
+HARDNESS_USER = config("HARDNESS_USER", default="")
+HARDNESS_PASSWORD = config("HARDNESS_PASSWORD", default="")
+HARDNESS_BASE_URL = config("HARDNESS_BASE_URL", default="").rstrip("/")
 HARDNESS_NOTAFISCAL_GRID_ID = config("HARDNESS_NOTAFISCAL_GRID_ID", default="")
 HARDNESS_PRODUTOS_GRID_ID = config("HARDNESS_PRODUTOS_GRID_ID", default="")
 HARDNESS_ESTOQUE_GRID_ID = config("HARDNESS_ESTOQUE_GRID_ID", default="")
 
 
+class HardnessAPIError(Exception):
+    """Exceção específica para falhas de comunicação ou scraping no Hardness ERP."""
+
 
 class HardnessAPI:
-    def __init__(self,verbose=True):
+    def __init__(self, verbose=True, timeout=35):
         self.name = "AMM"
-        self.empresas_dict ={
-                                "AMM EPIS": {
-                                    "id_sistema": "1",
-                               },
-                                "AMM Solucoes": {
-                                    "id_sistema": "2",
-                               }
-                            }
+        self.timeout = timeout
+        self.empresas_dict = {
+            "AMM EPIS": {"id_sistema": "1"},
+            "AMM Solucoes": {"id_sistema": "2"},
+        }
         self.session = requests.Session()
         self.base_url = HARDNESS_BASE_URL
-        self.session.headers.update({
-                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                                        "X-Requested-With": "XMLHttpRequest",
-                                        "Referer": self.base_url + "/erp/"
-                                    })
-        self.url_login = self.base_url + "/hardness3/outros/login/index.php"
-        self.notafiscal_url = self.base_url + "/crm/crm001/grid/crm001GridPrincipalNotasFiscais/"
-        self.produtos_url = self.base_url + "/crm/crm001/grid/crm001gridPrincipalProdutos/"
-        self.estoque_url = self.base_url + "/cad/cad002/grid/lista/"
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"{self.base_url}/erp/",
+            }
+        )
+        self.url_login = f"{self.base_url}/hardness3/outros/login/index.php"
+        self.notafiscal_url = f"{self.base_url}/crm/crm001/grid/crm001GridPrincipalNotasFiscais/"
+        self.produtos_url = f"{self.base_url}/crm/crm001/grid/crm001gridPrincipalProdutos/"
+        self.estoque_url = f"{self.base_url}/cad/cad002/grid/lista/"
         self.verbose = verbose
+        self.autenticado = False
         self.grid_dicts = {
             self.notafiscal_url: HARDNESS_NOTAFISCAL_GRID_ID,
             self.produtos_url: HARDNESS_PRODUTOS_GRID_ID,
-            self.estoque_url: HARDNESS_ESTOQUE_GRID_ID
+            self.estoque_url: HARDNESS_ESTOQUE_GRID_ID,
         }
 
+    def _request(self, method: str, url: str, tentativas: int = 2, **kwargs):
+        """Executa requisição HTTP com timeout padrão e retry automático em falhas de rede."""
+        kwargs.setdefault("timeout", self.timeout)
+        ultimo_erro = None
+        for t in range(tentativas):
+            try:
+                resp = self.session.request(method, url, **kwargs)
+                return resp
+            except requests.RequestException as exc:
+                ultimo_erro = exc
+                if self.verbose:
+                    print(f"⚠️ [Hardness] Falha de conexão ({t + 1}/{tentativas}) em {url}: {exc}")
+                time.sleep(1.0 * (t + 1))
+        raise HardnessAPIError(f"Falha de comunicação com o servidor Hardness ({url}): {ultimo_erro}")
 
-    def login(self):
-        print("Fazendo login no sistema...")
+    def login(self) -> bool:
+        if not self.base_url or not HARDNESS_USER or not HARDNESS_PASSWORD:
+            raise HardnessAPIError(
+                "Credenciais do Hardness (HARDNESS_BASE_URL, HARDNESS_USER, HARDNESS_PASSWORD) não configuradas no .env."
+            )
+        if self.verbose:
+            print("🔐 Fazendo login no sistema Hardness...")
         payload_login = {
             "login": HARDNESS_USER,
             "senha": HARDNESS_PASSWORD,
         }
-        self.session.post(self.url_login, data=payload_login)
+        resp = self._request("POST", self.url_login, data=payload_login)
+        if resp.status_code >= 400:
+            raise HardnessAPIError(f"Erro HTTP {resp.status_code} ao tentar autenticar no Hardness.")
+        self.autenticado = True
         if self.verbose:
-            print("Login efetuado.")
-    
-    def trocar_empresa(self, empresa_id):
+            print("✅ Login efetuado no Hardness.")
+        return True
+
+    def trocar_empresa(self, empresa_id) -> bool:
+        if not self.autenticado:
+            self.login()
+
         url_troca_empresa = f"{self.base_url}/empresa/{empresa_id}/"
         if self.verbose:
             print(f"🔄 Trocando sessão para a empresa ID {empresa_id}...")
-        resposta_troca = self.session.post(url_troca_empresa) 
+
+        resposta_troca = self._request("POST", url_troca_empresa)
         verifica_empresa = self.verifica_empresa()
 
-        # Garante a comparação como string
+        # Se a sessão tiver expirado, refaz o login uma vez e tenta novamente
+        if str(verifica_empresa) != str(empresa_id):
+            if self.verbose:
+                print("🔄 Sessão expirada ou empresa divergente. Reautenticando no Hardness...")
+            self.login()
+            resposta_troca = self._request("POST", url_troca_empresa)
+            verifica_empresa = self.verifica_empresa()
+
         if str(verifica_empresa) == str(empresa_id):
             if self.verbose:
                 print("✅ Empresa trocada com sucesso no servidor.")
-            return True 
+            return True
         else:
-            print(f"⚠️ Atenção: A troca de empresa retornou status {resposta_troca.status_code}")
-            return False 
+            print(
+                f"⚠️ Atenção: A troca de empresa retornou status {resposta_troca.status_code} "
+                f"(empresa verificada: {verifica_empresa}, esperada: {empresa_id})"
+            )
+            return False
 
     def verifica_empresa(self):
-        url = f"{self.base_url}/sistema/funcoes/util/verificaEmpresaAtual/?ajax=true&callback=jQuery16205376931034128021_1778415793103&_=1778415835153"
-        resposta = self.session.get(url)
-        # Extrai apenas o conteúdo dentro dos parênteses do callback
-        match = re.search(r'^[^\(]+\((.*)\);?$', resposta.text)
+        url = (
+            f"{self.base_url}/sistema/funcoes/util/verificaEmpresaAtual/"
+            "?ajax=true&callback=jQuery16205376931034128021_1778415793103&_=1778415835153"
+        )
+        resposta = self._request("GET", url)
+        texto = resposta.text.strip()
+        match = re.search(r"^[^\(]+\((.*)\);?$", texto, re.DOTALL)
 
         if match:
-            dado_limpo = match.group(1)
-            # Remove as aspas caso o dado venha como string JSON
-            dado_limpo = dado_limpo.strip('"') 
-            
+            dado_limpo = match.group(1).strip().strip('"').strip("'")
             if self.verbose:
-                print(f"O valor extraído é: {dado_limpo}") # Saída: 1
+                print(f"   ℹ️ Empresa ativa na sessão: {dado_limpo}")
             return dado_limpo
+        elif texto.isdigit():
+            return texto
         else:
-            input("⚠️ Atenção: Não foi possível extrair o valor da empresa atual.")
+            # NUNCA usar input() aqui para não travar threads web ou agendador em background!
+            print(f"⚠️ Atenção: Não foi possível extrair o ID da empresa atual (resposta: {texto[:120]}).")
             return None
-        
-    def filtrar(self, data_inicio="", data_fim="",CFOP="VENDA", cancelada="N",url=None):
-        payload ={
+
+    @staticmethod
+    def _extrair_grid_hash(html_text: str) -> str:
+        """Extrai o hash MD5 de 32 caracteres do grid no HTML/JS do Hardness."""
+        padroes = [
+            r"encodeURIComponent\(['\"]([a-f0-9]{32})['\"]\)",
+            r"grid['\"]?\s*[:=]\s*['\"]([a-f0-9]{32})['\"]",
+            r"\b([a-f0-9]{32})\b",
+        ]
+        for padrao in padroes:
+            m = re.search(padrao, html_text, re.IGNORECASE)
+            if m:
+                return m.group(1)
+        return ""
+
+    def filtrar(self, data_inicio="", data_fim="", CFOP="VENDA", cancelada="N", url=None):
+        alvo_url = url or self.notafiscal_url
+        payload = {
             "ajax": "true",
             "divIdRoot": "crm001",
             "tab": "geral",
-            # "loading": str(loading_offset) # O parâmetro mágico da paginação!
         }
 
-        self.session.post(url or self.notafiscal_url, data=payload)
-        response_pagina = self.session.get(url or self.notafiscal_url, params=payload)
-        # with open("pagina.html", "w", encoding="utf-8") as f:
-        #     f.write(response_pagina.text)
-        
-        soup = BeautifulSoup(response_pagina.text, 'html.parser')
-        # 2. Encontra o formulário de filtro (ID dinâmico)
-        form = soup.select_one('div.gridFiltro form')
-        
-        if not form:
-            print("Formulário de filtro não encontrado!")
-            return False
-        
-        form_id = form['id']
-        print(f"Form ID encontrado: {form_id}")
+        self._request("POST", alvo_url, data=payload)
+        response_pagina = self._request("GET", alvo_url, params=payload)
 
-        # 3. Mágica: Descobrir as chaves em Base64 lendo o HTML
-        # Vamos criar um dicionário vazio e preencher lendo os inputs ocultos de "-titulo"
+        soup = BeautifulSoup(response_pagina.text, "html.parser")
+        form = soup.select_one("div.gridFiltro form")
+
+        if not form:
+            print("⚠️ Formulário de filtro não encontrado na primeira tentativa. Reautenticando...")
+            self.login()
+            self._request("POST", alvo_url, data=payload)
+            response_pagina = self._request("GET", alvo_url, params=payload)
+            soup = BeautifulSoup(response_pagina.text, "html.parser")
+            form = soup.select_one("div.gridFiltro form")
+            if not form:
+                print("❌ Formulário de filtro não encontrado no Hardness!")
+                return False
+
+        form_id = form.get("id", "")
+        if self.verbose:
+            print(f"Form ID encontrado: {form_id}")
+
         filter_data = {}
-        
-        for input_tag in form.find_all('input'):
-            name = input_tag.get('name', '')
-            
-            # Ignoramos inputs sem nome
-            if not name: continue
-            
-            # Mapeamento dinâmico pelo título
-            if name.endswith('-titulo'):
-                titulo = input_tag.get('value', '').lower()
-                base64_name = name.replace('-titulo', '') # Remove o '-titulo' para pegar o nome do input real
-                
-                # Se o titulo for CFOP, preenchemos o valor
-                if 'cfop' in titulo:
+        for input_tag in form.find_all("input"):
+            name = input_tag.get("name", "")
+            if not name:
+                continue
+
+            if name.endswith("-titulo"):
+                titulo = input_tag.get("value", "").lower()
+                base64_name = name.replace("-titulo", "")
+                if "cfop" in titulo:
                     filter_data[base64_name] = CFOP
-                # Se for Cancelada, preenchemos o valor
-                elif 'cancelada' in titulo:
+                elif "cancelada" in titulo:
                     filter_data[base64_name] = cancelada
-                    
-            # Lidando com o campo de Data (que tem d1 e d2)
-            elif name.endswith('-d1') and data_inicio:
+            elif name.endswith("-d1") and data_inicio:
                 filter_data[name] = data_inicio
-            elif name.endswith('-d2') and data_fim:
+            elif name.endswith("-d2") and data_fim:
                 filter_data[name] = data_fim
 
-        # 4. Limpa todos os outros campos (opcional, mas recomendado)
-        for input_tag in form.find_all(['input', 'select']):
-            name = input_tag.get('name')
+        for input_tag in form.find_all(["input", "select"]):
+            name = input_tag.get("name")
             if name and name not in filter_data:
-                # Mantém só os campos que queremos definir
-                if not name.endswith('-titulo') and 'VDAwN19EYXRhX0VtaXNzYW8=' not in name:
+                if not name.endswith("-titulo") and "VDAwN19EYXRhX0VtaXNzYW8=" not in name:
                     filter_data[name] = ""
-        # 4. Procura o Hash do Grid no Javascript da página
-        import re
-        grid_hash = ""
-        match_grid = re.search(r"encodeURIComponent\('([a-f0-9]{32})'\)", response_pagina.text)
-        if match_grid:
-            grid_hash = match_grid.group(1)
-        else:
-            print("Aviso: Não encontrou o hash do grid. O filtro vai falhar.")
+
+        grid_hash = self._extrair_grid_hash(response_pagina.text) or self.grid_dicts.get(alvo_url, "")
+        if not grid_hash:
+            print("⚠️ Aviso: Não encontrou o hash do grid. O filtro vai falhar.")
             return False
 
-        # 5. Monta o payload final dinamicamente
         post_data = {
-            'ajax': 'true',
-            'filtroUID': form_id,
-            'grid': grid_hash,
+            "ajax": "true",
+            "filtroUID": form_id,
+            "grid": grid_hash,
         }
-
-        # Adiciona os campos do formulário
         post_data.update(filter_data)
 
-        # 6. Envia o filtro
-        filter_url = "/sistema/funcoes/gridFiltro/filtrar/"
-        full_url = f"{self.base_url.rstrip('/')}{filter_url}"
-
-        response_filter = self.session.post(full_url, data=post_data)
+        full_url = f"{self.base_url}/sistema/funcoes/gridFiltro/filtrar/"
+        response_filter = self._request("POST", full_url, data=post_data)
 
         if response_filter.status_code == 200:
-            print("✅ Filtro aplicado com sucesso!")
-            # Recarrega o grid após filtrar
-            self.session.get(url or self.notafiscal_url, params={"ajax": "true"})
+            if self.verbose:
+                print("✅ Filtro aplicado com sucesso!")
+            self._request("GET", alvo_url, params={"ajax": "true"})
             return True
         else:
             print(f"❌ Erro ao aplicar filtro: {response_filter.status_code}")
-            print(response_filter.text[:500])
             return False
-    
-    def get_dados(self,url= None):
-        if url is None:
-            url = self.notafiscal_url
 
-        # Variáveis para a Paginação
+    def get_dados(self, url=None, max_paginas=100):
+        alvo_url = url or self.notafiscal_url
         todos_dados_empresa = []
         loading_offset = 0
         pagina = 0
 
-        # Loop infinito que só para quando a página vier vazia
-        while True:
+        while pagina < max_paginas:
             payload_grid = {
                 "ajax": "true",
                 "tab": "geral",
@@ -202,25 +242,25 @@ class HardnessAPI:
                 "limite": "5000",
                 "rows": "5000",
                 "length": "5000",
-                # "loading": str(loading_offset) # O parâmetro mágico da paginação!
             }
             if loading_offset > 0:
                 payload_grid["loading"] = str(pagina)
 
-            print(f"📥 Baixando página {pagina} (A partir da linha {loading_offset})...")
-            response = self.session.post(url, data=payload_grid)
-            
+            if self.verbose:
+                print(f"📥 Baixando página {pagina} (A partir da linha {loading_offset})...")
+            response = self._request("POST", alvo_url, data=payload_grid)
+
             soup = BeautifulSoup(response.text, "html.parser")
             linhas_com_dados = soup.find_all("tr", attrs={"todoscampos": True})
 
-            # CONDIÇÃO DE PARADA: Se não vier nenhuma nota, quebra o while
             if not linhas_com_dados:
-                print("🏁 Fim dos dados retornado pelo servidor!")
-                break 
-            
-            print(f"   ✅ Encontradas {len(linhas_com_dados)} notas nesta página.")
-            
-            # Extrai os dados da página atual
+                if self.verbose:
+                    print("🏁 Fim dos dados retornado pelo servidor!")
+                break
+
+            if self.verbose:
+                print(f"   ✅ Encontrados {len(linhas_com_dados)} registros nesta página.")
+
             for linha in linhas_com_dados:
                 json_texto = linha.get("todoscampos")
                 if json_texto:
@@ -229,13 +269,11 @@ class HardnessAPI:
                         todos_dados_empresa.append(dados_linha)
                     except json.JSONDecodeError:
                         continue
-            
-            # PREPARA PARA A PRÓXIMA PÁGINA
-            # Incrementamos o offset com a quantidade de itens que acabamos de receber
+
             loading_offset += len(linhas_com_dados)
-            pagina += 1 
+            pagina += 1
+
         df = pd.DataFrame(todos_dados_empresa)
-        
         if "excluirLinha" in df.columns:
             df = df.drop(columns=["excluirLinha"])
         return df
@@ -243,85 +281,77 @@ class HardnessAPI:
     def filtrar_estoque(self, codigo="!"):
         """
         Aplica o filtro na página de estoque, limpando todos os outros campos
-        e inserindo "!" no campo Código.
+        e inserindo "!" (não vazio) no campo Código.
         """
         url = self.estoque_url
-        
         payload = {
             "ajax": "true",
             "divIdRoot": "crm001",
-            "tab": "geral"
+            "tab": "geral",
         }
 
-        # Carrega a página do estoque
-        self.session.post(url, data=payload)
-        response_pagina = self.session.get(url, params=payload)
-        
-        soup = BeautifulSoup(response_pagina.text, 'html.parser')
-        
-        # 1. Encontra o formulário de filtro
-        form = soup.select_one('div.gridFiltro form')
-        if not form:
-            print("Formulário de filtro de estoque não encontrado!")
-            return False
-        
-        form_id = form['id']
-        print(f"Form ID do estoque encontrado: {form_id}")
+        self._request("POST", url, data=payload)
+        response_pagina = self._request("GET", url, params=payload)
 
-        # 2. Descobrir as chaves em Base64
+        soup = BeautifulSoup(response_pagina.text, "html.parser")
+        form = soup.select_one("div.gridFiltro form")
+        if not form:
+            print("⚠️ Formulário de filtro de estoque não encontrado! Tentando reautenticar...")
+            self.login()
+            self.trocar_empresa("1")
+            self._request("POST", url, data=payload)
+            response_pagina = self._request("GET", url, params=payload)
+            soup = BeautifulSoup(response_pagina.text, "html.parser")
+            form = soup.select_one("div.gridFiltro form")
+            if not form:
+                print("❌ Formulário de filtro de estoque não encontrado!")
+                return False
+
+        form_id = form.get("id", "")
         filter_data = {}
-        
-        for input_tag in form.find_all('input'):
-            name = input_tag.get('name', '')
-            if not name: continue
-            
-            if name.endswith('-titulo'):
-                titulo = input_tag.get('value', '').lower()
-                base64_name = name.replace('-titulo', '') 
-                
-                # Procura pelo campo "código" (com ou sem acento)
-                if 'código' in titulo or 'codigo' in titulo:
+
+        for input_tag in form.find_all("input"):
+            name = input_tag.get("name", "")
+            if not name:
+                continue
+
+            if name.endswith("-titulo"):
+                titulo = input_tag.get("value", "").lower()
+                base64_name = name.replace("-titulo", "")
+                if "código" in titulo or "codigo" in titulo:
                     filter_data[base64_name] = codigo
 
-        # 3. Limpa TODOS os outros campos do filtro para garantir que venha "tudo limpo"
-        for input_tag in form.find_all(['input', 'select']):
-            name = input_tag.get('name')
+        for input_tag in form.find_all(["input", "select"]):
+            name = input_tag.get("name")
             if name and name not in filter_data:
-                if not name.endswith('-titulo'):
+                if not name.endswith("-titulo"):
                     filter_data[name] = ""
 
-        # 4. Procura o Hash do Grid no Javascript
-        grid_hash = ""
-        match_grid = re.search(r"encodeURIComponent\('([a-f0-9]{32})'\)", response_pagina.text)
-        if match_grid:
-            grid_hash = match_grid.group(1)
-        else:
-            print("Aviso: Não encontrou o hash do grid de estoque.")
+        grid_hash = self._extrair_grid_hash(response_pagina.text) or self.grid_dicts.get(url, "")
+        if not grid_hash:
+            print("⚠️ Aviso: Não encontrou o hash do grid de estoque.")
             return False
 
-        # 5. Monta e envia o payload
         post_data = {
-            'ajax': 'true',
-            'filtroUID': form_id,
-            'grid': grid_hash,
+            "ajax": "true",
+            "filtroUID": form_id,
+            "grid": grid_hash,
         }
         post_data.update(filter_data)
 
-        filter_url = "/sistema/funcoes/gridFiltro/filtrar/"
-        full_url = f"{self.base_url.rstrip('/')}{filter_url}"
-
-        response_filter = self.session.post(full_url, data=post_data)
+        full_url = f"{self.base_url}/sistema/funcoes/gridFiltro/filtrar/"
+        response_filter = self._request("POST", full_url, data=post_data)
 
         if response_filter.status_code == 200:
-            print("✅ Filtro de estoque aplicado com sucesso!")
-            # Recarrega o grid após filtrar
-            self.session.get(url, params={"ajax": "true"})
+            if self.verbose:
+                print("✅ Filtro de estoque aplicado com sucesso!")
+            self._request("GET", url, params={"ajax": "true"})
             return True
         else:
             print(f"❌ Erro ao aplicar filtro no estoque: {response_filter.status_code}")
             return False
 
-    def get_dados_estoque(self):
+    def get_dados_estoque(self, max_paginas=100):
         """
         Extrai os dados paginados da url de estoque e retorna um DataFrame limpo.
         """
@@ -330,7 +360,7 @@ class HardnessAPI:
         loading_offset = 0
         pagina = 0
 
-        while True:
+        while pagina < max_paginas:
             payload_grid = {
                 "ajax": "true",
                 "tab": "geral",
@@ -343,18 +373,21 @@ class HardnessAPI:
             if loading_offset > 0:
                 payload_grid["loading"] = str(pagina)
 
-            print(f"📥 Baixando página de estoque {pagina} (A partir da linha {loading_offset})...")
-            response = self.session.post(url, data=payload_grid)
-            
+            if self.verbose:
+                print(f"📥 Baixando página de estoque {pagina} (A partir da linha {loading_offset})...")
+            response = self._request("POST", url, data=payload_grid)
+
             soup = BeautifulSoup(response.text, "html.parser")
             linhas_com_dados = soup.find_all("tr", attrs={"todoscampos": True})
 
             if not linhas_com_dados:
-                print("🏁 Fim dos dados retornados pelo servidor!")
-                break 
-            
-            print(f"   ✅ Encontrados {len(linhas_com_dados)} itens nesta página.")
-            
+                if self.verbose:
+                    print("🏁 Fim dos dados retornados pelo servidor!")
+                break
+
+            if self.verbose:
+                print(f"   ✅ Encontrados {len(linhas_com_dados)} itens nesta página.")
+
             for linha in linhas_com_dados:
                 json_texto = linha.get("todoscampos")
                 if json_texto:
@@ -363,32 +396,16 @@ class HardnessAPI:
                         todos_dados_estoque.append(dados_linha)
                     except json.JSONDecodeError:
                         continue
-            
-            loading_offset += len(linhas_com_dados)
-            pagina += 1 
 
-        # Transformação em DataFrame e Limpeza Final
+            loading_offset += len(linhas_com_dados)
+            pagina += 1
+
         df = pd.DataFrame(todos_dados_estoque)
-        
         if df.empty:
-            print("Nenhum dado encontrado no estoque com esse filtro.")
+            print("ℹ️ Nenhum dado encontrado no estoque com esse filtro.")
             return df
 
-        # Limpeza padrão de colunas sistêmicas
         if "excluirLinha" in df.columns:
             df = df.drop(columns=["excluirLinha"])
 
-        # Garantia de Qualidade (Double Check): 
-        # Filtra o DataFrame no Pandas para ter certeza que apenas itens com "!" no código ficaram
-        # Identifique o nome exato da coluna (pode ser "Codigo", "codigo", etc. Ajuste se necessário).
-        colunas_codigo = [col for col in df.columns if col.lower() in ['código', 'codigo']]
-        
-        if colunas_codigo:
-            coluna_alvo = colunas_codigo[0]
-            # Mantém apenas as linhas onde a coluna de código contém o '!'
-            df = df[df[coluna_alvo].astype(str).str.contains("!", na=False)]
-            df = df.reset_index(drop=True)
-
         return df
-
-

@@ -1,0 +1,417 @@
+{% extends 'base.html' %}
+
+{% block title %}Central de Sincronização & Logs - AMM{% endblock %}
+
+{% block extra_head %}
+<style>
+    .sync-action-card {
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        transition: box-shadow 0.15s ease, transform 0.15s ease;
+    }
+    .sync-action-card:hover {
+        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.07);
+    }
+    .table-matrix-scroll {
+        max-height: 55vh;
+        overflow: auto;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background-color: #ffffff;
+    }
+    .table-logs thead th {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background-color: #1e293b !important;
+        color: #ffffff !important;
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        white-space: nowrap;
+    }
+    .table-logs tbody td {
+        font-size: 0.84rem;
+        vertical-align: middle;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Cabeçalho -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h2 class="fw-bold text-primary mb-0">🔄 Central de Sincronização & Logs do Agendador</h2>
+        <small class="text-muted">
+            Dispare sincronizações manuais com o Hardness ERP, PipeRun CRM e Base CA-EPI ou monitore as execuções automáticas.
+        </small>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <form method="post" action="{% url 'disparar_sincronizacao' %}" class="m-0 form-sync-trigger">
+            {% csrf_token %}
+            <input type="hidden" name="acao" value="completa">
+            <button type="submit" class="btn btn-primary btn-sm fw-bold shadow-sm btn-sync-submit">
+                ⚡ Sincronização Rápida Completa (Notas + Estoque + Metas)
+            </button>
+        </form>
+        <a href="{% url 'painel_sincronizacao' %}" class="btn btn-outline-secondary btn-sm">
+            🔄 Atualizar Página
+        </a>
+    </div>
+</div>
+
+<!-- Linha 1: Resumo do Estado Atual do Banco de Dados -->
+<div class="row g-3 mb-4">
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-kpi p-3 bg-white border-start border-primary border-4 h-100">
+            <span class="text-muted small fw-bold">🧾 Notas Fiscais (Hardness)</span>
+            <h4 class="fw-bold text-dark mb-1 mt-1">{{ resumo_banco.total_notas }} <small class="fs-6 fw-normal text-muted">NFs válidas</small></h4>
+            <small class="text-muted">
+                Últ. emissão: <strong>{{ resumo_banco.ultima_nota_emissao|date:"d/m/Y"|default:"-" }}</strong> |
+                Sync: {{ resumo_banco.ultima_nota_sync|date:"d/m H:i"|default:"-" }}
+            </small>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-kpi p-3 bg-white border-start border-success border-4 h-100">
+            <span class="text-muted small fw-bold">📦 Catálogo & Estoque (Hardness)</span>
+            <h4 class="fw-bold text-success mb-1 mt-1">{{ resumo_banco.total_produtos }} <small class="fs-6 fw-normal text-muted">SKUs</small></h4>
+            <small class="text-muted">
+                Últ. atualização de saldo: <strong>{{ resumo_banco.ultimo_estoque_sync|date:"d/m/Y H:i"|default:"-" }}</strong>
+            </small>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-kpi p-3 bg-white border-start border-info border-4 h-100">
+            <span class="text-muted small fw-bold">🎯 Metas Comerciais (PipeRun)</span>
+            <h4 class="fw-bold text-info-emphasis mb-1 mt-1">{{ resumo_banco.metas_mes_atual }} <small class="fs-6 fw-normal text-muted">metas no mês atual</small></h4>
+            <small class="text-muted">
+                Últ. atualização: <strong>{{ resumo_banco.ultima_meta_sync|date:"d/m/Y H:i"|default:"-" }}</strong>
+            </small>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-kpi p-3 bg-white border-start border-warning border-4 h-100">
+            <span class="text-muted small fw-bold">🛡️ Certificados CA (MTE/CAEPI)</span>
+            <h4 class="fw-bold text-dark mb-1 mt-1">{{ resumo_banco.cas_com_validade }} <small class="fs-6 fw-normal text-muted">/ {{ resumo_banco.total_cas }} CAs c/ validade</small></h4>
+            <small class="text-muted">
+                Pendentes sem data: <strong class="{% if resumo_banco.cas_sem_validade > 0 %}text-danger{% else %}text-success{% endif %}">{{ resumo_banco.cas_sem_validade }}</strong>
+            </small>
+        </div>
+    </div>
+</div>
+
+<!-- Linha 2: Cards de Disparo Manual por Integração -->
+<div class="row g-3 mb-4">
+    <!-- 1. Notas Fiscais Hardness -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-primary">🧾 Notas Fiscais (Hardness)</h6>
+                    {% if ultimos_por_tipo.NOTAS_HARDNESS %}
+                        <span class="badge {% if ultimos_por_tipo.NOTAS_HARDNESS.status == 'SUCESSO' %}bg-success-subtle text-success{% elif ultimos_por_tipo.NOTAS_HARDNESS.status == 'ERRO' %}bg-danger-subtle text-danger{% else %}bg-warning-subtle text-dark{% endif %} border">
+                            {{ ultimos_por_tipo.NOTAS_HARDNESS.status }}
+                        </span>
+                    {% endif %}
+                </div>
+                <p class="small text-muted mb-2">
+                    Busca notas fiscais emitidas ou canceladas nas 3 empresas. Em branco = sincronização incremental rápida (últimos 3 dias).
+                </p>
+            </div>
+            <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="acao" value="notas_hardness">
+                <div class="row g-1 mb-2">
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-0" style="font-size: 0.72rem;">Início (opcional):</label>
+                        <input type="date" name="data_inicio" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-0" style="font-size: 0.72rem;">Fim (opcional):</label>
+                        <input type="date" name="data_fim" class="form-control form-control-sm">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-outline-primary btn-sm w-100 fw-semibold btn-sync-submit">
+                    🔄 Sincronizar Notas Agora
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 2. Estoque e Itens Vendidos Hardness -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-success">📦 Estoque & Itens (Hardness)</h6>
+                    {% if ultimos_por_tipo.ESTOQUE_HARDNESS %}
+                        <span class="badge {% if ultimos_por_tipo.ESTOQUE_HARDNESS.status == 'SUCESSO' %}bg-success-subtle text-success{% elif ultimos_por_tipo.ESTOQUE_HARDNESS.status == 'ERRO' %}bg-danger-subtle text-danger{% else %}bg-warning-subtle text-dark{% endif %} border">
+                            {{ ultimos_por_tipo.ESTOQUE_HARDNESS.status }}
+                        </span>
+                    {% endif %}
+                </div>
+                <p class="small text-muted mb-2">
+                    Atualiza saldos de estoque das 3 empresas, ordens de compra pendentes e itens faturados no período.
+                </p>
+            </div>
+            <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="acao" value="estoque_hardness">
+                <div class="mb-2">
+                    <label class="form-label small text-muted mb-0" style="font-size: 0.72rem;">Janela retroativa (dias s/ histórico):</label>
+                    <input type="number" name="dias_retroativos" value="60" min="5" max="365" class="form-control form-control-sm">
+                </div>
+                <button type="submit" class="btn btn-outline-success btn-sm w-100 fw-semibold btn-sync-submit">
+                    🔄 Sincronizar Estoque & Itens
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 3. Metas PipeRun -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-info-emphasis">🎯 Metas Comerciais (PipeRun)</h6>
+                    {% if ultimos_por_tipo.METAS_PIPERUN %}
+                        <span class="badge {% if ultimos_por_tipo.METAS_PIPERUN.status == 'SUCESSO' %}bg-success-subtle text-success{% elif ultimos_por_tipo.METAS_PIPERUN.status == 'ERRO' %}bg-danger-subtle text-danger{% else %}bg-warning-subtle text-dark{% endif %} border">
+                            {{ ultimos_por_tipo.METAS_PIPERUN.status }}
+                        </span>
+                    {% endif %}
+                </div>
+                <p class="small text-muted mb-2">
+                    Consulta a API REST v1 do PipeRun CRM com paginação automática, atualiza o cache local e cria contas de vendedores novos.
+                </p>
+            </div>
+            <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="acao" value="metas_piperun">
+                <div class="mb-2">
+                    <label class="form-label small text-muted mb-0" style="font-size: 0.72rem;">Fonte de dados:</label>
+                    <input type="text" class="form-control form-control-sm bg-light" value="API PipeRun (Forçar Ao Vivo)" readonly>
+                </div>
+                <button type="submit" class="btn btn-outline-info btn-sm w-100 fw-semibold text-dark btn-sync-submit">
+                    🔄 Sincronizar Metas PipeRun
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 4. Vencimentos CA -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-warning-emphasis">🛡️ Vencimentos de CA</h6>
+                    {% if ultimos_por_tipo.CONSULTA_CA %}
+                        <span class="badge {% if ultimos_por_tipo.CONSULTA_CA.status == 'SUCESSO' %}bg-success-subtle text-success{% elif ultimos_por_tipo.CONSULTA_CA.status == 'ERRO' %}bg-danger-subtle text-danger{% else %}bg-warning-subtle text-dark{% endif %} border">
+                            {{ ultimos_por_tipo.CONSULTA_CA.status }}
+                        </span>
+                    {% endif %}
+                </div>
+                <p class="small text-muted mb-2">
+                    Consulta a validade dos CAs cadastrados. Por padrão busca apenas os que ainda não possuem data de vencimento.
+                </p>
+            </div>
+            <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="acao" value="ca_epi">
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" name="forcar_todos" value="1" id="id_forcar_ca">
+                    <label class="form-check-label small text-muted" for="id_forcar_ca">
+                        Forçar reconsulta geral de todos os CAs ({{ resumo_banco.total_cas }})
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-outline-warning btn-sm w-100 fw-semibold text-dark btn-sync-submit">
+                    🔄 Consultar Vencimentos CA
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Linha 3: Histórico de Sincronizações (LogSincronizacao) -->
+<div class="card card-kpi bg-white p-4 mb-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div>
+            <h5 class="fw-bold mb-0">📋 Histórico de Sincronizações ({{ logs_sincronizacao|length }} registros recentes)</h5>
+            <small class="text-muted">Registra execuções disparadas pelo painel web, terminal (CLI) e agendador automático.</small>
+        </div>
+        <form method="get" class="d-flex flex-wrap gap-2 align-items-center">
+            <select name="tipo" class="form-select form-select-sm" style="width: auto;" onchange="this.form.submit()">
+                <option value="">Todos os Tipos</option>
+                {% for cod, nome in tipos_choices %}
+                    <option value="{{ cod }}" {% if filtro_tipo == cod %}selected{% endif %}>{{ nome }}</option>
+                {% endfor %}
+            </select>
+            <select name="status" class="form-select form-select-sm" style="width: auto;" onchange="this.form.submit()">
+                <option value="">Todos os Status</option>
+                {% for cod, nome in status_choices %}
+                    <option value="{{ cod }}" {% if filtro_status == cod %}selected{% endif %}>{{ nome }}</option>
+                {% endfor %}
+            </select>
+            {% if filtro_tipo or filtro_status %}
+                <a href="{% url 'painel_sincronizacao' %}" class="btn btn-sm btn-link text-danger">Limpar</a>
+            {% endif %}
+        </form>
+    </div>
+
+    <div class="table-matrix-scroll">
+        <table class="table table-hover table-logs align-middle mb-0 w-100">
+            <thead>
+                <tr>
+                    <th>Data/Hora Início</th>
+                    <th>Integração / Tipo</th>
+                    <th>Origem</th>
+                    <th>Usuário</th>
+                    <th class="text-center">Status</th>
+                    <th class="text-end">Duração</th>
+                    <th class="text-center">Criados / Atualiz.</th>
+                    <th>Resumo / Detalhes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs_sincronizacao %}
+                <tr>
+                    <td class="text-nowrap fw-semibold">{{ log.iniciado_em|date:"d/m/Y H:i:s" }}</td>
+                    <td class="text-nowrap">{{ log.get_tipo_display }}</td>
+                    <td class="text-nowrap">
+                        <span class="badge bg-light text-secondary border">{{ log.get_origem_display }}</span>
+                    </td>
+                    <td class="text-nowrap">{{ log.usuario|default:"-" }}</td>
+                    <td class="text-center text-nowrap">
+                        {% if log.status == 'SUCESSO' %}
+                            <span class="badge bg-success">✅ Sucesso</span>
+                        {% elif log.status == 'ERRO' %}
+                            <span class="badge bg-danger">❌ Erro</span>
+                        {% else %}
+                            <span class="badge bg-warning text-dark">⏳ Em Andamento</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end text-nowrap">{{ log.duracao_segundos|floatformat:1 }}s</td>
+                    <td class="text-center text-nowrap">
+                        <span class="text-success fw-bold">+{{ log.registros_criados }}</span> /
+                        <span class="text-primary fw-semibold">{{ log.registros_atualizados }}</span>
+                    </td>
+                    <td>
+                        {% if log.status == 'ERRO' %}
+                            <details>
+                                <summary class="small text-danger fw-semibold" style="cursor: pointer;">{{ log.mensagem|truncatechars:90 }}</summary>
+                                <pre class="bg-light p-2 mt-1 rounded border small text-danger mb-0" style="max-height: 160px; overflow: auto; font-size: 0.75rem;">{{ log.mensagem }}</pre>
+                            </details>
+                        {% else %}
+                            <div>{{ log.mensagem }}</div>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="8" class="text-center py-4 text-muted">
+                        Nenhum log de sincronização registrado até o momento. Clique em um dos botões acima para iniciar.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Linha 4: Status das Tarefas Agendadas (django_apscheduler) -->
+<div class="row g-3 mb-5">
+    <div class="col-lg-5">
+        <div class="card card-kpi bg-white p-4 h-100">
+            <h5 class="fw-bold mb-1">⏰ Jobs Registrados no Agendador</h5>
+            <small class="text-muted d-block mb-3">Processo background (<code>python manage.py run_scheduler</code>)</small>
+            <div class="table-responsive">
+                <table class="table table-sm table-bordered align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Job ID</th>
+                            <th>Próxima Execução</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for job in jobs_agendados %}
+                        <tr>
+                            <td class="fw-bold"><code>{{ job.id }}</code></td>
+                            <td>
+                                {% if job.next_run_time %}
+                                    <span class="badge bg-primary-subtle text-primary border">{{ job.next_run_time|date:"d/m/Y H:i:s" }}</span>
+                                {% else %}
+                                    <span class="text-muted">Pausado</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="2" class="text-center text-muted py-3">
+                                Nenhum job ativo registrado no banco pelo <code>run_scheduler</code>.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-7">
+        <div class="card card-kpi bg-white p-4 h-100">
+            <h5 class="fw-bold mb-1">⚙️ Últimas Execuções Internas do APScheduler</h5>
+            <small class="text-muted d-block mb-3">Histórico nativo da tabela <code>DjangoJobExecution</code></small>
+            <div class="table-matrix-scroll" style="max-height: 320px;">
+                <table class="table table-sm table-hover table-logs align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Horário</th>
+                            <th>Job</th>
+                            <th class="text-center">Status</th>
+                            <th class="text-end">Duração</th>
+                            <th>Exceção</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ex in execucoes_scheduler %}
+                        <tr>
+                            <td class="text-nowrap">{{ ex.run_time|date:"d/m/Y H:i:s" }}</td>
+                            <td class="text-nowrap"><code>{{ ex.job_id }}</code></td>
+                            <td class="text-center text-nowrap">
+                                {% if ex.status == 'Executed' %}
+                                    <span class="badge bg-success-subtle text-success border">{{ ex.status }}</span>
+                                {% else %}
+                                    <span class="badge bg-danger-subtle text-danger border">{{ ex.status }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end text-nowrap">{{ ex.duration|default:"0.0" }}s</td>
+                            <td class="small text-danger">{{ ex.exception|default:"-"|truncatechars:80 }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="text-center text-muted py-3">
+                                Nenhuma execução do agendador registrada ainda.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.querySelectorAll('.form-sync-trigger').forEach(function(form) {
+        form.addEventListener('submit', function() {
+            const btn = form.querySelector('.btn-sync-submit');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Sincronizando... aguarde';
+            }
+        });
+    });
+</script>
+{% endblock %}

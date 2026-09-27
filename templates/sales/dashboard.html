@@ -57,7 +57,24 @@
             Período: <strong>{{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }}</strong>
         </small>
     </div>
-    <div>
+    <div class="d-flex flex-wrap gap-2 no-print">
+        {% if request.user.is_admin %}
+        <form method="post" action="{% url 'disparar_sincronizacao' %}" class="m-0">
+            {% csrf_token %}
+            <input type="hidden" name="acao" value="notas_hardness">
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <button type="submit" class="btn btn-outline-secondary btn-sm fw-semibold shadow-sm" title="Sincronizar Notas Fiscais recentes no Hardness">
+                🔄 Sincronizar Notas
+            </button>
+        </form>
+        {% endif %}
+        <a href="{% url 'exportar_vendas_excel' %}?visao={{ vendedora_selecionada|urlencode }}&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
+           class="btn btn-success btn-sm fw-semibold shadow-sm">
+            📥 Exportar Excel (.xlsx)
+        </a>
+        <button type="button" onclick="window.print()" class="btn btn-outline-dark btn-sm fw-semibold shadow-sm">
+            🖨️ Exportar PDF
+        </button>
         <a href="{% url 'analise_clientes' %}{% if pode_selecionar and vendedora_selecionada != 'EMPRESA' %}?visao={{ vendedora_selecionada|urlencode }}{% endif %}"
            class="btn btn-outline-primary btn-sm fw-semibold shadow-sm">
             👥 Ver Carteira de Clientes
@@ -66,7 +83,7 @@
 </div>
 
 <!-- Barra de Filtros -->
-<div class="card card-kpi p-3 mb-4 bg-white">
+<div class="card card-kpi p-3 mb-4 bg-white no-print">
     <form method="get" class="row g-3 align-items-end">
         {% if pode_selecionar %}
         <div class="col-lg-5 col-md-6">

@@ -1,5 +1,5 @@
 from django.core.management.base import BaseCommand
-from sales.services import sincronizar_metas_piperun
+from sales.services import registrar_execucao_sincronizacao, sincronizar_metas_piperun
 
 
 class Command(BaseCommand):
@@ -8,7 +8,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self.stdout.write(self.style.NOTICE("🎯 Iniciando sincronização exclusiva de metas do PipeRun..."))
         try:
-            criadas, atualizadas = sincronizar_metas_piperun()
+            _, (criadas, atualizadas) = registrar_execucao_sincronizacao(
+                tipo="METAS_PIPERUN",
+                funcao_sync=lambda: sincronizar_metas_piperun(forcar_api=True),
+                origem="CLI",
+                usuario="Terminal",
+            )
             self.stdout.write(
                 self.style.SUCCESS(
                     f"✅ Metas atualizadas com sucesso! Novas: {criadas} | Atualizadas: {atualizadas}"

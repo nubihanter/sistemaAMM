@@ -178,3 +178,502 @@ def analise_clientes_view(request):
         "status_selecionados": status_selecionados,
     }
     return render(request, "sales/analise_clientes.html", context)
+
+
+@login_required
+def exportar_vendas_excel_view(request):
+    """Exporta os KPIs e Notas Fiscais do Dashboard Comercial em Excel (.xlsx)."""
+    from io import BytesIO
+    from django.http import HttpResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    user = request.user
+    if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS") and not user.is_superuser:
+        return redirect("dashboard_estoque")
+
+    hoje = timezone.now().date()
+    try:
+        mes_selecionado = int(request.GET.get("mes", hoje.month))
+    except ValueError:
+        mes_selecionado = hoje.month
+    try:
+        ano_selecionado = int(request.GET.get("ano", hoje.year))
+    except ValueError:
+        ano_selecionado = hoje.year
+
+    if user.is_vendedor:
+        vendedora_selecionada = (user.nome_vendedor_erp or user.first_name or user.username).strip().upper()
+    else:
+        vendedora_selecionada = request.GET.get("visao", "EMPRESA").strip().upper()
+
+    pode_ver_margem = bool(getattr(user, "is_admin", False))
+
+    qs = NotaFiscal.objects.exclude(status="CANCELADA").values(
+        "numero_nota",
+        "cliente_nome",
+        "cliente_documento",
+        "data_emissao",
+        "valor_total",
+        "vendedor_nome",
+    )
+    df = pd.DataFrame(list(qs))
+
+    metricas, _, _, _, _, _, tabela_notas = gerar_metricas_e_graficos(
+        df=df,
+        vendedora_selecionada=vendedora_selecionada,
+        mes_selecionado=mes_selecionado,
+        ano_selecionado=ano_selecionado,
+        incluir_margem_admin=pode_ver_margem,
+    )
+
+    wb = Workbook()
+    ws_kpis = wb.active
+    ws_kpis.title = "Resumo Comercial"
+
+    header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    bold_font = Font(bold=True, size=10)
+    thin_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+
+    ws_kpis.append(["Indicador Comercial", "Valor"])
+    for col_idx in (1, 2):
+        cell = ws_kpis.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="left" if col_idx == 1 else "right", vertical="center")
+
+    linhas_resumo = [
+        ("Visão / Escopo", vendedora_selecionada),
+        ("Período (Mês/Ano)", f"{mes_selecionado:02d}/{ano_selecionado}"),
+        ("Faturamento Realizado", metricas.get("total_vendas", "R$ 0,00")),
+        ("Meta Mensal", metricas.get("meta_total", "R$ 0,00")),
+        ("Atingimento da Meta", metricas.get("percentual_meta", "0.0%")),
+        ("Status do Ritmo", metricas.get("status_meta", "-")),
+        ("Projeção Linear de Fechamento", metricas.get("projecao_fechamento", "R$ 0,00")),
+        ("Projeção vs Meta", metricas.get("projecao_pct_meta", "0.0%")),
+        ("Comparativo Mês Anterior (MoM)", metricas.get("mom_delta_str", "-")),
+        ("Comparativo Mesmo Mês Ano Anterior (YoY)", metricas.get("yoy_delta_str", "-")),
+        ("Notas Emitidas no Mês", int(metricas.get("num_vendas", 0))),
+        ("Clientes Únicos Atendidos", int(metricas.get("num_clientes", 0))),
+        ("Ticket Médio por Nota", metricas.get("ticket_medio", "R$ 0,00")),
+    ]
+    if pode_ver_margem and metricas.get("tem_margem"):
+        linhas_resumo.extend(
+            [
+                ("Custo Total CMV dos Itens", metricas.get("custo_total_mes", "R$ 0,00")),
+                ("Lucro Bruto Estimado", metricas.get("margem_bruta_valor", "R$ 0,00")),
+                ("Margem Bruta (%)", metricas.get("margem_bruta_pct", "0.0%")),
+            ]
+        )
+
+    for label, val in linhas_resumo:
+        ws_kpis.append([label, val])
+        r = ws_kpis.max_row
+        ws_kpis.cell(row=r, column=1).font = bold_font
+        ws_kpis.cell(row=r, column=1).border = thin_border
+        c_val = ws_kpis.cell(row=r, column=2)
+        c_val.border = thin_border
+        c_val.alignment = Alignment(horizontal="right", vertical="center")
+
+    ws_kpis.column_dimensions["A"].width = 42
+    ws_kpis.column_dimensions["B"].width = 28
+
+    # Aba 2: Notas Fiscais do Período
+    ws_nfs = wb.create_sheet(title="Notas Fiscais do Mês")
+    colunas_nf = ["Data Emissão", "Número NF", "Cliente (Consolidado por CNPJ)", "Vendedor", "Valor Total (R$)"]
+    ws_nfs.append(colunas_nf)
+    for col_idx in range(1, len(colunas_nf) + 1):
+        c = ws_nfs.cell(row=1, column=col_idx)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+    for nf in tabela_notas:
+        ws_nfs.append(
+            [
+                nf.get("data_str", ""),
+                nf.get("numero_nota", ""),
+                nf.get("cliente_nome", ""),
+                nf.get("vendedor_nome", ""),
+                float(nf.get("valor_total", 0)),
+            ]
+        )
+        r = ws_nfs.max_row
+        for c_idx in range(1, 6):
+            ws_nfs.cell(row=r, column=c_idx).border = thin_border
+        ws_nfs.cell(row=r, column=5).number_format = "R$ #,##0.00"
+
+    larguras = [16, 16, 46, 22, 20]
+    for idx, larg in enumerate(larguras, start=1):
+        ws_nfs.column_dimensions[get_column_letter(idx)].width = larg
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    nome_arq = f"relatorio_comercial_{vendedora_selecionada.lower()}_{mes_selecionado:02d}_{ano_selecionado}.xlsx"
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{nome_arq}"'
+    return response
+
+
+@login_required
+def exportar_clientes_excel_view(request):
+    """Exporta a matriz de inteligência de carteira de clientes em Excel (.xlsx)."""
+    from io import BytesIO
+    from django.http import HttpResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    user = request.user
+    if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS") and not user.is_superuser:
+        return redirect("dashboard_estoque")
+
+    if user.is_vendedor:
+        visao_selecionada = (user.nome_vendedor_erp or user.first_name or user.username).strip().upper()
+    else:
+        visao_selecionada = request.GET.get("visao", "EMPRESA").strip().upper()
+
+    curvas_selecionadas = request.GET.getlist("curva") or ["AA", "A", "B"]
+    status_selecionados = request.GET.getlist("status") or ["Novo", "Ativo", "Em Risco", "Inativo"]
+
+    notas_qs = NotaFiscal.objects.exclude(status="CANCELADA").values(
+        "cliente_nome",
+        "cliente_documento",
+        "vendedor_nome",
+        "data_emissao",
+        "valor_total",
+    )
+    df = pd.DataFrame(list(notas_qs))
+
+    kpis, _, _, df_tabela = gerar_analise_clientes(
+        df=df,
+        vendedora_selecionada=visao_selecionada,
+        filtros_curva=curvas_selecionadas,
+        filtros_status=status_selecionados,
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Carteira de Clientes"
+
+    header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    thin_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+
+    colunas = [
+        "Empresa (Consolidada por CNPJ)",
+        "Vendedor Atual (Últ. Compra)",
+        "Curva ABC",
+        "Status Saúde",
+        "Fat. Médio Mensal 6m (R$)",
+        "Dias Inativos",
+        "Última Venda",
+        "Fat. Histórico Total (R$)",
+        "Qtd NFs",
+    ]
+    ws.append(colunas)
+    for col_idx in range(1, len(colunas) + 1):
+        c = ws.cell(row=1, column=col_idx)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+    if not df_tabela.empty:
+        for row in df_tabela.to_dict(orient="records"):
+            ws.append(
+                [
+                    row.get("cliente_nome", ""),
+                    row.get("Vendedora", "-"),
+                    row.get("Curva", ""),
+                    row.get("Status", ""),
+                    float(row.get("Ticket_Medio_6m", 0)),
+                    int(row.get("Dias_Inatividade", 0)),
+                    row.get("Ultima_Venda_str", ""),
+                    float(row.get("Faturamento_Total", 0)),
+                    int(row.get("Num_Vendas", 0)),
+                ]
+            )
+            r = ws.max_row
+            for c_idx in range(1, len(colunas) + 1):
+                ws.cell(row=r, column=c_idx).border = thin_border
+            ws.cell(row=r, column=5).number_format = "R$ #,##0.00"
+            ws.cell(row=r, column=8).number_format = "R$ #,##0.00"
+
+    larguras = [46, 24, 12, 16, 24, 16, 16, 24, 14]
+    for idx, larg in enumerate(larguras, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = larg
+
+    # Aba 2: Resumo KPIs da Carteira
+    ws_resumo = wb.create_sheet(title="Resumo da Carteira")
+    ws_resumo.append(["Indicador", "Valor"])
+    for col_idx in (1, 2):
+        c = ws_resumo.cell(row=1, column=col_idx)
+        c.fill = header_fill
+        c.font = header_font
+
+    for titulo, val in [
+        ("Escopo / Carteira", visao_selecionada),
+        ("Curvas Selecionadas", ", ".join(curvas_selecionadas)),
+        ("Status Selecionados", ", ".join(status_selecionados)),
+        ("Total de Clientes na Carteira", kpis.get("total_clientes", 0)),
+        ("Clientes Novos no Ano", kpis.get("clientes_novos", 0)),
+        ("Clientes Ativos (≤30d)", kpis.get("clientes_ativos", 0)),
+        ("Clientes Em Risco (31-90d)", kpis.get("clientes_risco", 0)),
+        ("Potencial Mensal Em Risco", kpis.get("potencial_risco_mensal", "R$ 0,00")),
+        ("Clientes Inativos (>90d)", kpis.get("clientes_inativos", 0)),
+        ("Clientes Alta Prioridade (AA/A/B)", kpis.get("prioritarios", 0)),
+        ("Faturamento Acumulado da Carteira", kpis.get("faturamento_carteira", "R$ 0,00")),
+    ]:
+        ws_resumo.append([titulo, val])
+
+    ws_resumo.column_dimensions["A"].width = 36
+    ws_resumo.column_dimensions["B"].width = 28
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    nome_arq = f"carteira_clientes_{visao_selecionada.lower()}_{timezone.now().strftime('%Y%m%d')}.xlsx"
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{nome_arq}"'
+    return response
+
+
+@login_required
+def painel_sincronizacao_view(request):
+    """
+    Painel de controle para disparar sincronizações manuais (Hardness, PipeRun, CA EPI)
+    e auditar logs de execução tanto do painel quanto do agendador (APScheduler).
+    """
+    from django.db.models import Max
+    from django_apscheduler.models import DjangoJob, DjangoJobExecution
+    from inventory.models import CertificadoAprovacao, ProdutoEPI
+    from .models import LogSincronizacao, MetaVendedor
+
+    user = request.user
+    if not getattr(user, "is_admin", False):
+        if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS"):
+            return redirect("dashboard_estoque")
+        return redirect("dashboard_vendas")
+
+    filtro_tipo = request.GET.get("tipo", "").strip()
+    filtro_status = request.GET.get("status", "").strip()
+
+    logs_qs = LogSincronizacao.objects.all()
+    if filtro_tipo:
+        logs_qs = logs_qs.filter(tipo=filtro_tipo)
+    if filtro_status:
+        logs_qs = logs_qs.filter(status=filtro_status)
+
+    logs_sincronizacao = list(logs_qs[:50])
+
+    # Última execução de cada tipo
+    ultimos_por_tipo = {}
+    for codigo_tipo, _ in LogSincronizacao.TIPO_CHOICES:
+        ultimos_por_tipo[codigo_tipo] = (
+            LogSincronizacao.objects.filter(tipo=codigo_tipo).order_by("-iniciado_em").first()
+        )
+
+    # Jobs agendados no django_apscheduler
+    try:
+        jobs_agendados = list(DjangoJob.objects.all().order_by("id"))
+        execucoes_scheduler = list(
+            DjangoJobExecution.objects.select_related("job").order_by("-run_time")[:25]
+        )
+    except Exception:
+        jobs_agendados = []
+        execucoes_scheduler = []
+
+    # Resumo do estado atual do banco
+    hoje = timezone.now().date()
+    resumo_banco = {
+        "total_notas": NotaFiscal.objects.exclude(status="CANCELADA").count(),
+        "ultima_nota_emissao": NotaFiscal.objects.aggregate(Max("data_emissao"))["data_emissao__max"],
+        "ultima_nota_sync": NotaFiscal.objects.aggregate(Max("data_sincronizacao"))["data_sincronizacao__max"],
+        "total_produtos": ProdutoEPI.objects.count(),
+        "ultimo_estoque_sync": ProdutoEPI.objects.aggregate(Max("data_atualizacao"))["data_atualizacao__max"],
+        "metas_mes_atual": MetaVendedor.objects.filter(ano=hoje.year, mes=hoje.month).count(),
+        "ultima_meta_sync": MetaVendedor.objects.aggregate(Max("data_atualizacao"))["data_atualizacao__max"],
+        "total_cas": CertificadoAprovacao.objects.count(),
+        "cas_com_validade": CertificadoAprovacao.objects.filter(data_validade__isnull=False).count(),
+        "cas_sem_validade": CertificadoAprovacao.objects.filter(data_validade__isnull=True).count(),
+    }
+
+    context = {
+        "logs_sincronizacao": logs_sincronizacao,
+        "ultimos_por_tipo": ultimos_por_tipo,
+        "jobs_agendados": jobs_agendados,
+        "execucoes_scheduler": execucoes_scheduler,
+        "resumo_banco": resumo_banco,
+        "filtro_tipo": filtro_tipo,
+        "filtro_status": filtro_status,
+        "tipos_choices": LogSincronizacao.TIPO_CHOICES,
+        "status_choices": LogSincronizacao.STATUS_CHOICES,
+    }
+    return render(request, "sales/painel_sincronizacao.html", context)
+
+
+@login_required
+def disparar_sincronizacao_view(request):
+    """Executa manualmente uma tarefa de sincronização solicitada no painel."""
+    from django.contrib import messages
+    from django.views.decorators.http import require_POST
+    from inventory.services import sincronizar_estoque_e_itens_rapido, sincronizar_vencimentos_ca
+    from .services import (
+        registrar_execucao_sincronizacao,
+        sincronizar_desde_ultimo_registro,
+        sincronizar_metas_piperun,
+        sincronizar_notas_hardness,
+    )
+
+    if request.method != "POST":
+        return redirect("painel_sincronizacao")
+
+    user = request.user
+    if not getattr(user, "is_admin", False):
+        messages.error(request, "Apenas o perfil Administrador possui permissão para acessar ou disparar sincronizações.")
+        if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS"):
+            return redirect("dashboard_estoque")
+        return redirect("dashboard_vendas")
+
+    acao = request.POST.get("acao", "").strip()
+    nome_usuario = user.username
+
+    try:
+        if acao == "notas_hardness":
+            data_inicio = request.POST.get("data_inicio", "").strip()
+            data_fim = request.POST.get("data_fim", "").strip()
+            if data_inicio:
+                # Converte YYYY-MM-DD (input type=date) para DD/MM/YYYY se necessário
+                if "-" in data_inicio and len(data_inicio) == 10:
+                    partes = data_inicio.split("-")
+                    data_inicio = f"{partes[2]}/{partes[1]}/{partes[0]}"
+                if data_fim and "-" in data_fim and len(data_fim) == 10:
+                    partes_f = data_fim.split("-")
+                    data_fim = f"{partes_f[2]}/{partes_f[1]}/{partes_f[0]}"
+                else:
+                    data_fim = timezone.now().strftime("%d/%m/%Y")
+
+                _, (criadas, atualizadas) = registrar_execucao_sincronizacao(
+                    tipo="NOTAS_HARDNESS",
+                    funcao_sync=lambda: sincronizar_notas_hardness(
+                        data_inicio=data_inicio, data_fim=data_fim
+                    ),
+                    origem="MANUAL_PAINEL",
+                    usuario=nome_usuario,
+                )
+            else:
+                _, (criadas, atualizadas) = registrar_execucao_sincronizacao(
+                    tipo="NOTAS_HARDNESS",
+                    funcao_sync=sincronizar_desde_ultimo_registro,
+                    origem="MANUAL_PAINEL",
+                    usuario=nome_usuario,
+                )
+            messages.success(
+                request,
+                f"Notas Fiscais (Hardness) sincronizadas com sucesso! {criadas} novas / {atualizadas} atualizadas.",
+            )
+
+        elif acao == "estoque_hardness":
+            try:
+                dias = max(5, min(365, int(request.POST.get("dias_retroativos", 60))))
+            except ValueError:
+                dias = 60
+            _, res = registrar_execucao_sincronizacao(
+                tipo="ESTOQUE_HARDNESS",
+                funcao_sync=lambda: sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=dias),
+                origem="MANUAL_PAINEL",
+                usuario=nome_usuario,
+            )
+            messages.success(
+                request,
+                f"Estoque & Itens (Hardness) sincronizados! Estoque: {res['estoque_criados']} novos / {res['estoque_atualizados']} atualizados | "
+                f"Itens: {res['itens_criados']} novos / {res['itens_atualizados']} atualizados.",
+            )
+
+        elif acao == "metas_piperun":
+            _, (criadas, atualizadas) = registrar_execucao_sincronizacao(
+                tipo="METAS_PIPERUN",
+                funcao_sync=lambda: sincronizar_metas_piperun(forcar_api=True),
+                origem="MANUAL_PAINEL",
+                usuario=nome_usuario,
+            )
+            messages.success(
+                request,
+                f"Metas do PipeRun sincronizadas com sucesso! {criadas} novas / {atualizadas} atualizadas.",
+            )
+
+        elif acao == "ca_epi":
+            forcar = request.POST.get("forcar_todos") in ("1", "true", "on", "True")
+
+            def _exec_ca():
+                r = sincronizar_vencimentos_ca(forcar_todos=forcar, max_workers=6)
+                return {
+                    "criados": 0,
+                    "atualizados": r.get("atualizados", 0),
+                    "mensagem": (
+                        f"Processados: {r.get('total', 0)} | Atualizados: {r.get('atualizados', 0)} | "
+                        f"Vencidos: {r.get('vencidos', 0)} | Não encontrados: {r.get('nao_encontrados', 0)}"
+                    ),
+                }
+
+            _, res_ca = registrar_execucao_sincronizacao(
+                tipo="CONSULTA_CA",
+                funcao_sync=_exec_ca,
+                origem="MANUAL_PAINEL",
+                usuario=nome_usuario,
+            )
+            messages.success(request, f"Consulta de CAs concluída! {res_ca['mensagem']}")
+
+        elif acao == "completa":
+            def _exec_completa():
+                nf_c, nf_a = sincronizar_desde_ultimo_registro()
+                res_est = sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=60)
+                mt_c, mt_a = sincronizar_metas_piperun(forcar_api=True)
+                tot_c = nf_c + res_est.get("estoque_criados", 0) + res_est.get("itens_criados", 0) + mt_c
+                tot_a = nf_a + res_est.get("estoque_atualizados", 0) + res_est.get("itens_atualizados", 0) + mt_a
+                return {
+                    "criados": tot_c,
+                    "atualizados": tot_a,
+                    "mensagem": (
+                        f"NFs: +{nf_c}/{nf_a} | Estoque: +{res_est.get('estoque_criados', 0)}/{res_est.get('estoque_atualizados', 0)} | "
+                        f"Itens: +{res_est.get('itens_criados', 0)}/{res_est.get('itens_atualizados', 0)} | Metas: +{mt_c}/{mt_a}"
+                    ),
+                }
+
+            _, res_comp = registrar_execucao_sincronizacao(
+                tipo="COMPLETA",
+                funcao_sync=_exec_completa,
+                origem="MANUAL_PAINEL",
+                usuario=nome_usuario,
+            )
+            messages.success(request, f"Sincronização completa concluída! ({res_comp['mensagem']})")
+
+        else:
+            messages.warning(request, "Ação de sincronização não reconhecida.")
+
+    except Exception as exc:
+        messages.error(request, f"Falha durante a sincronização ({acao}): {exc}")
+
+    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/sales/sincronizacao/"
+    return redirect(next_url)

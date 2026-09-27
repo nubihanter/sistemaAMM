@@ -122,3 +122,42 @@ def garantir_usuario_para_vendedor(nome_hardness: str, senha_padrao: str = "amm@
 @receiver(post_save, sender=Vendedor)
 def criar_usuario_vendedor_signal(sender, instance, **kwargs):
     garantir_usuario_para_vendedor(instance.nome_hardness, senha_padrao="amm@2026")
+
+
+class LogSincronizacao(models.Model):
+    TIPO_CHOICES = [
+        ("NOTAS_HARDNESS", "Notas Fiscais (Hardness)"),
+        ("ESTOQUE_HARDNESS", "Estoque & Itens (Hardness)"),
+        ("METAS_PIPERUN", "Metas de Vendas (PipeRun)"),
+        ("CONSULTA_CA", "Vencimentos de CA (MTE)"),
+        ("COMPLETA", "Sincronização Completa"),
+    ]
+    ORIGEM_CHOICES = [
+        ("MANUAL_PAINEL", "Painel Web (Manual)"),
+        ("AGENDADOR_AUTO", "Agendador Automático"),
+        ("CLI", "Comando de Terminal (CLI)"),
+    ]
+    STATUS_CHOICES = [
+        ("EM_ANDAMENTO", "Em Andamento"),
+        ("SUCESSO", "Sucesso"),
+        ("ERRO", "Erro / Falha"),
+    ]
+
+    tipo = models.CharField(max_length=30, choices=TIPO_CHOICES, db_index=True, verbose_name="Tipo de Sincronização")
+    origem = models.CharField(max_length=20, choices=ORIGEM_CHOICES, default="MANUAL_PAINEL", verbose_name="Origem")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="EM_ANDAMENTO", db_index=True, verbose_name="Status")
+    usuario = models.CharField(max_length=100, default="Sistema", verbose_name="Disparado por")
+    iniciado_em = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Iniciado em")
+    finalizado_em = models.DateTimeField(blank=True, null=True, verbose_name="Finalizado em")
+    duracao_segundos = models.FloatField(default=0.0, verbose_name="Duração (s)")
+    registros_criados = models.IntegerField(default=0, verbose_name="Registros Criados")
+    registros_atualizados = models.IntegerField(default=0, verbose_name="Registros Atualizados")
+    mensagem = models.TextField(blank=True, null=True, verbose_name="Resumo / Detalhes")
+
+    class Meta:
+        verbose_name = "Log de Sincronização"
+        verbose_name_plural = "Logs de Sincronização"
+        ordering = ["-iniciado_em"]
+
+    def __str__(self):
+        return f"[{self.get_status_display()}] {self.get_tipo_display()} ({self.iniciado_em:%d/%m/%Y %H:%M})"
