@@ -71,44 +71,55 @@ def consolidar_clientes_por_documento(df: pd.DataFrame) -> pd.DataFrame:
     if "cliente_documento" not in df.columns:
         return df
 
-    def limpar_doc(val):
-        if val is None or pd.isna(val):
-            return ""
-        d = re.sub(r"\D", "", str(val))
-        return d if len(d) >= 8 else ""
+    docs = df["cliente_documento"].fillna("").astype(str).str.replace(r"\D", "", regex=True)
+    docs = docs.where(docs.str.len() >= 8, "")
+    mask_doc = docs != ""
+    if mask_doc.any():
+        com_doc = df.loc[mask_doc, ["cliente_nome"]].copy()
+        com_doc["_doc_limpo"] = docs[mask_doc]
+        if "data_emissao" in df.columns:
+            com_doc["data_emissao"] = df.loc[mask_doc, "data_emissao"]
+            com_doc = com_doc.sort_values("data_emissao", kind="mergesort")
+        mapa_doc_nome = (
+            com_doc.drop_duplicates(subset=["_doc_limpo"], keep="last")
+            .set_index("_doc_limpo")["cliente_nome"]
+        )
+        df.loc[mask_doc, "cliente_nome"] = docs[mask_doc].map(mapa_doc_nome)
 
-    df["_doc_limpo"] = df["cliente_documento"].apply(limpar_doc)
-    com_doc = df[df["_doc_limpo"] != ""]
-    if not com_doc.empty:
-        if "data_emissao" in com_doc.columns:
-            com_doc = com_doc.sort_values("data_emissao")
-        mapa_doc_nome = com_doc.groupby("_doc_limpo")["cliente_nome"].last().to_dict()
-        mask_doc = df["_doc_limpo"] != ""
-        df.loc[mask_doc, "cliente_nome"] = df.loc[mask_doc, "_doc_limpo"].map(mapa_doc_nome)
-
-    df = df.drop(columns=["_doc_limpo"])
     return df
+
+
+def _construir_resolvedor_meta_mes(mes, ano):
+    """
+    Pré-carrega vínculos Vendedor e MetaVendedor do mês em 2 queries únicas,
+    evitando N+1 consultas no loop de ranking.
+    """
+    vinculos = {
+        str(v["nome_hardness"]).strip().upper(): normalizar_nome(v["nome_piperun"] or v["nome_hardness"])
+        for v in Vendedor.objects.values("nome_hardness", "nome_piperun")
+    }
+    metas_por_nome_norm = {}
+    for m in MetaVendedor.objects.filter(mes=mes, ano=ano).values("vendedor_nome", "valor"):
+        chave = normalizar_nome(m["vendedor_nome"])
+        if chave and chave not in metas_por_nome_norm:
+            metas_por_nome_norm[chave] = float(m["valor"])
+
+    def resolver(vendedora_selecionada):
+        if vendedora_selecionada == "EMPRESA":
+            alvo = normalizar_nome(USUARIO_PIPERUN_META_EMPRESA)
+        else:
+            chave_hard = str(vendedora_selecionada).strip().upper()
+            alvo = vinculos.get(chave_hard) or normalizar_nome(chave_hard)
+        return metas_por_nome_norm.get(alvo, 0.0)
+
+    return resolver
 
 
 def obter_meta_vendedor(vendedora_selecionada, mes, ano):
     """
     Busca a meta mensal cruzando nome_hardness -> nome_piperun -> MetaVendedor.
     """
-    if vendedora_selecionada == "EMPRESA":
-        nome_piperun_alvo = normalizar_nome(USUARIO_PIPERUN_META_EMPRESA)
-    else:
-        vend = Vendedor.objects.filter(nome_hardness=vendedora_selecionada.strip().upper()).first()
-        if vend and vend.nome_piperun:
-            nome_piperun_alvo = normalizar_nome(vend.nome_piperun)
-        else:
-            nome_piperun_alvo = normalizar_nome(vendedora_selecionada)
-
-    metas_mes = MetaVendedor.objects.filter(mes=mes, ano=ano)
-    for m in metas_mes:
-        if normalizar_nome(m.vendedor_nome) == nome_piperun_alvo:
-            return float(m.valor)
-
-    return 0.0
+    return _construir_resolvedor_meta_mes(mes, ano)(vendedora_selecionada)
 
 
 def obter_historico_metas_vendedor(vendedora_selecionada, mes_selecionado, ano_selecionado, limite=6):
@@ -198,6 +209,7 @@ def gerar_metricas_e_graficos(
     mes_selecionado,
     ano_selecionado,
     incluir_margem_admin=False,
+    gerar_graficos=True,
 ):
     metricas_vazias = {
         "total_vendas": "R$ 0,00",
@@ -220,6 +232,7 @@ def gerar_metricas_e_graficos(
         "yoy_positivo": True,
         "margem_bruta_valor": "R$ 0,00",
         "margem_bruta_pct": "0.0%",
+        "custo_total_mes": "R$ 0,00",
         "tem_margem": False,
     }
 
@@ -229,6 +242,8 @@ def gerar_metricas_e_graficos(
     df = df.copy()
     df["data_emissao"] = pd.to_datetime(df["data_emissao"])
     df["valor_total"] = pd.to_numeric(df["valor_total"], errors="coerce").fillna(0.0)
+    if "vendedor_nome" in df.columns:
+        df["vendedor_nome"] = df["vendedor_nome"].fillna("").astype(str).str.strip().str.upper()
     df = consolidar_clientes_por_documento(df)
 
     # Período selecionado
@@ -243,25 +258,25 @@ def gerar_metricas_e_graficos(
         mes_ant, ano_ant = 12, ano_selecionado - 1
     else:
         mes_ant, ano_ant = mes_selecionado - 1, ano_selecionado
-    dt_ini_mom = date(ano_ant, mes_ant, 1)
-    dt_fim_mom = (data_inicio - timedelta(days=1)).date()
+    dt_ini_mom = pd.Timestamp(year=ano_ant, month=mes_ant, day=1)
+    dt_fim_mom = data_inicio - timedelta(days=1)
 
     # Mesmo mês do ano anterior (para YoY)
-    dt_ini_yoy = date(ano_selecionado - 1, mes_selecionado, 1)
+    dt_ini_yoy = pd.Timestamp(year=ano_selecionado - 1, month=mes_selecionado, day=1)
     if mes_selecionado == 12:
-        dt_fim_yoy = date(ano_selecionado, 1, 1) - timedelta(days=1)
+        dt_fim_yoy = pd.Timestamp(year=ano_selecionado, month=1, day=1) - timedelta(days=1)
     else:
-        dt_fim_yoy = date(ano_selecionado - 1, mes_selecionado + 1, 1) - timedelta(days=1)
+        dt_fim_yoy = pd.Timestamp(year=ano_selecionado - 1, month=mes_selecionado + 1, day=1) - timedelta(days=1)
 
     # Filtro de dados da visão atual
     if vendedora_selecionada == "EMPRESA":
-        df_vendedor = df.copy()
+        df_vendedor = df
     else:
-        df_vendedor = df[df["vendedor_nome"].astype(str).str.strip().str.upper() == vendedora_selecionada].copy()
+        df_vendedor = df[df["vendedor_nome"] == vendedora_selecionada]
 
     df_filtered = df_vendedor[
-        (df_vendedor["data_emissao"].dt.date >= data_inicio.date())
-        & (df_vendedor["data_emissao"].dt.date <= data_fim.date())
+        (df_vendedor["data_emissao"] >= data_inicio)
+        & (df_vendedor["data_emissao"] <= data_fim)
     ].copy()
 
     total_vendas = float(df_filtered["valor_total"].sum())
@@ -272,14 +287,14 @@ def gerar_metricas_e_graficos(
     # Comparativo MoM e YoY
     vendas_mom = float(
         df_vendedor[
-            (df_vendedor["data_emissao"].dt.date >= dt_ini_mom)
-            & (df_vendedor["data_emissao"].dt.date <= dt_fim_mom)
+            (df_vendedor["data_emissao"] >= dt_ini_mom)
+            & (df_vendedor["data_emissao"] <= dt_fim_mom)
         ]["valor_total"].sum()
     )
     vendas_yoy = float(
         df_vendedor[
-            (df_vendedor["data_emissao"].dt.date >= dt_ini_yoy)
-            & (df_vendedor["data_emissao"].dt.date <= dt_fim_yoy)
+            (df_vendedor["data_emissao"] >= dt_ini_yoy)
+            & (df_vendedor["data_emissao"] <= dt_fim_yoy)
         ]["valor_total"].sum()
     )
 
@@ -301,8 +316,9 @@ def gerar_metricas_e_graficos(
         yoy_delta_str = f"Sem base {mes_selecionado:02d}/{ano_selecionado - 1}"
         yoy_positivo = True
 
-    # Meta do Vendedor / Empresa
-    meta_periodo = obter_meta_vendedor(vendedora_selecionada, mes_selecionado, ano_selecionado)
+    # Meta do Vendedor / Empresa (com resolvedor em lote para evitar N+1 no ranking)
+    resolver_meta_mes = _construir_resolvedor_meta_mes(mes_selecionado, ano_selecionado)
+    meta_periodo = resolver_meta_mes(vendedora_selecionada)
     percentual_meta = (total_vendas / meta_periodo * 100.0) if meta_periodo > 0 else 0.0
 
     # --- CÁLCULO PONDERADO POR DIAS DECORRIDOS E PROJEÇÃO DE FECHAMENTO ---
@@ -361,7 +377,7 @@ def gerar_metricas_e_graficos(
     )
     dias_info = f"Dia {dias_decorridos}/{dias_no_mes} (Meta até hoje: R$ {meta_proporcional:,.2f})"
 
-    dados_margem = {"tem_dados": False, "lucro_bruto": "R$ 0,00", "margem_pct": "0.0%"}
+    dados_margem = {"tem_dados": False, "lucro_bruto": "R$ 0,00", "margem_pct": "0.0%", "custo_total": "R$ 0,00"}
     if incluir_margem_admin:
         dados_margem = _calcular_margem_periodo(
             data_ini=data_inicio.date(),
@@ -391,8 +407,22 @@ def gerar_metricas_e_graficos(
         "yoy_positivo": yoy_positivo,
         "margem_bruta_valor": dados_margem["lucro_bruto"],
         "margem_bruta_pct": dados_margem["margem_pct"],
+        "custo_total_mes": dados_margem.get("custo_total", "R$ 0,00"),
         "tem_margem": dados_margem["tem_dados"],
     }
+
+    # Tabela de Notas Fiscais do Período
+    tabela_notas = []
+    if not df_filtered.empty:
+        df_nf_tab = df_filtered.sort_values(["data_emissao", "numero_nota"], ascending=[False, False]).copy()
+        df_nf_tab["data_str"] = df_nf_tab["data_emissao"].dt.strftime("%d/%m/%Y")
+        df_nf_tab["data_iso"] = df_nf_tab["data_emissao"].dt.strftime("%Y-%m-%d")
+        tabela_notas = df_nf_tab[
+            ["numero_nota", "cliente_nome", "vendedor_nome", "data_str", "data_iso", "valor_total"]
+        ].to_dict(orient="records")
+
+    if not gerar_graficos:
+        return metricas, "", "", "", "", "", tabela_notas
 
     # Gráfico 1: Evolução Diária Acumulada vs Rampa Ideal da Meta
     grafico_evolucao_html = ""
@@ -486,9 +516,9 @@ def gerar_metricas_e_graficos(
     # Gráfico 2: Ranking por % da Meta (Visível inclusive para Vendedor para estimular competição)
     grafico_ranking_html = ""
     df_periodo_geral = df[
-        (df["data_emissao"].dt.date >= data_inicio.date())
-        & (df["data_emissao"].dt.date <= data_fim.date())
-    ].copy()
+        (df["data_emissao"] >= data_inicio)
+        & (df["data_emissao"] <= data_fim)
+    ]
 
     ranking_data = []
     if "vendedor_nome" in df.columns:
@@ -496,19 +526,19 @@ def gerar_metricas_e_graficos(
             Vendedor.objects.filter(ativo=True, ativo_ranking=True).values_list("nome_hardness", flat=True)
         )
         vendedores_ranking = [
-            str(v).strip().upper()
-            for v in df["vendedor_nome"].dropna().unique()
-            if str(v).strip().upper() not in ["", "NAN", "NONE"]
-            and str(v).strip().upper() in vendedores_permitidos_ranking
+            v
+            for v in df["vendedor_nome"].unique()
+            if v not in ["", "NAN", "NONE"] and v in vendedores_permitidos_ranking
         ]
+        vendas_por_vendedor_mes = (
+            df_periodo_geral.groupby("vendedor_nome")["valor_total"].sum().to_dict()
+            if not df_periodo_geral.empty
+            else {}
+        )
 
         for vend in vendedores_ranking:
-            total_vend = float(
-                df_periodo_geral[
-                    df_periodo_geral["vendedor_nome"].astype(str).str.strip().str.upper() == vend
-                ]["valor_total"].sum()
-            )
-            meta_vend = obter_meta_vendedor(vend, mes_selecionado, ano_selecionado)
+            total_vend = float(vendas_por_vendedor_mes.get(vend, 0.0))
+            meta_vend = resolver_meta_mes(vend)
             pct_meta = (total_vend / meta_vend * 100.0) if meta_vend > 0 else 0.0
 
             ranking_data.append(
@@ -601,8 +631,8 @@ def gerar_metricas_e_graficos(
             dt_m_fim = pd.Timestamp(year=m.ano, month=m.mes + 1, day=1) - timedelta(days=1)
 
         vendas_m = df_vendedor[
-            (df_vendedor["data_emissao"].dt.date >= dt_m_ini.date())
-            & (df_vendedor["data_emissao"].dt.date <= dt_m_fim.date())
+            (df_vendedor["data_emissao"] >= dt_m_ini)
+            & (df_vendedor["data_emissao"] <= dt_m_fim)
         ]["valor_total"].sum()
 
         periodo_label = f"{m.mes:02d}/{m.ano}"
@@ -630,16 +660,6 @@ def gerar_metricas_e_graficos(
         fig_compare.update_layout(height=360, margin=dict(t=45, b=20, l=20, r=20))
         grafico_historico_metas_html = fig_to_html(fig_compare)
 
-    # Tabela de Notas Fiscais do Período
-    tabela_notas = []
-    if not df_filtered.empty:
-        df_nf_tab = df_filtered.sort_values(["data_emissao", "numero_nota"], ascending=[False, False]).copy()
-        df_nf_tab["data_str"] = df_nf_tab["data_emissao"].dt.strftime("%d/%m/%Y")
-        df_nf_tab["data_iso"] = df_nf_tab["data_emissao"].dt.strftime("%Y-%m-%d")
-        tabela_notas = df_nf_tab[
-            ["numero_nota", "cliente_nome", "vendedor_nome", "data_str", "data_iso", "valor_total"]
-        ].to_dict(orient="records")
-
     return (
         metricas,
         grafico_evolucao_html,
@@ -656,31 +676,41 @@ FATURAMENTO_MINIMO_INATIVIDADE = 500.0
 
 def calcular_ticket_medio_6m_clientes(df):
     """
-    Calcula o faturamento médio mensal retroativo à ÚLTIMA VENDA de cada cliente.
+    Calcula de forma vetorizada o faturamento médio mensal retroativo à ÚLTIMA VENDA de cada cliente.
     Se o cliente tiver histórico menor que 6 meses, divide apenas pelos meses decorridos.
     """
-    ticket_map = {}
-    df_ordenado = df.sort_values("data_emissao")
+    if df.empty:
+        return {}
 
-    for cliente, grupo in df_ordenado.groupby("cliente_nome"):
-        ult_data = grupo["data_emissao"].max()
-        prim_data = grupo["data_emissao"].min()
+    extremos = df.groupby("cliente_nome")["data_emissao"].agg(prim_data="min", ult_data="max")
+    extremos["janela_inicio"] = extremos["ult_data"] - pd.Timedelta(days=180)
 
-        janela_inicio = ult_data - pd.Timedelta(days=180)
-        vendas_janela = grupo[grupo["data_emissao"] >= janela_inicio]["valor_total"].sum()
+    janela_por_linha = df["cliente_nome"].map(extremos["janela_inicio"])
+    vendas_janela = (
+        df.loc[df["data_emissao"] >= janela_por_linha]
+        .groupby("cliente_nome")["valor_total"]
+        .sum()
+    )
+    extremos["vendas_janela"] = vendas_janela.reindex(extremos.index, fill_value=0.0)
 
-        if prim_data <= janela_inicio:
-            meses_divisor = 6.0
-        else:
-            meses_decorridos = (ult_data.year - prim_data.year) * 12 + (ult_data.month - prim_data.month) + 1
-            meses_divisor = min(6.0, max(1.0, float(meses_decorridos)))
+    meses_decorridos = (
+        (extremos["ult_data"].dt.year - extremos["prim_data"].dt.year) * 12
+        + (extremos["ult_data"].dt.month - extremos["prim_data"].dt.month)
+        + 1
+    ).clip(lower=1.0, upper=6.0)
 
-        ticket_map[cliente] = float(vendas_janela) / meses_divisor
+    divisor = np.where(extremos["prim_data"] <= extremos["janela_inicio"], 6.0, meses_decorridos)
+    ticket_series = extremos["vendas_janela"] / divisor
+    return ticket_series.to_dict()
 
-    return ticket_map
 
-
-def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=None, filtros_status=None):
+def gerar_analise_clientes(
+    df,
+    vendedora_selecionada="EMPRESA",
+    filtros_curva=None,
+    filtros_status=None,
+    gerar_graficos=True,
+):
     """
     Gera KPIs, gráficos de risco e a tabela analítica de clientes.
     - Unifica clientes duplicados por CNPJ/CPF (cliente_documento).
@@ -695,30 +725,30 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
     df["valor_total"] = pd.to_numeric(df["valor_total"], errors="coerce").fillna(0.0).astype(float)
     df = consolidar_clientes_por_documento(df)
 
-    # 1. Histórico GLOBAL de cada cliente ordenado por data crescente
-    df_ordenado_global = df.sort_values(["data_emissao", "valor_total"])
+    # 1. Histórico GLOBAL de cada cliente ordenado por data crescente (sort estável)
+    df_ordenado_global = df.sort_values(["data_emissao", "valor_total"], kind="mergesort")
 
-    def get_ultimo_vendedor(serie):
-        """Retorna o vendedor da última venda, ignorando valores nulos ou vazios."""
-        validos = serie.dropna()
-        validos = validos[
-            ~validos.astype(str).str.strip().str.upper().isin(["", "NAN", "NONE", "DESCONHECIDO"])
-        ]
-        return str(validos.iloc[-1]).strip().upper() if not validos.empty else "-"
+    vend_limpo = df_ordenado_global["vendedor_nome"].fillna("").astype(str).str.strip().str.upper()
+    mask_vend_valido = ~vend_limpo.isin(["", "NAN", "NONE", "DESCONHECIDO"])
+    ultimo_vendedor_map = (
+        df_ordenado_global.loc[mask_vend_valido, ["cliente_nome"]]
+        .assign(_vend=vend_limpo[mask_vend_valido])
+        .drop_duplicates(subset=["cliente_nome"], keep="last")
+        .set_index("cliente_nome")["_vend"]
+    )
 
     df_clientes = (
-        df_ordenado_global.groupby("cliente_nome")
+        df_ordenado_global.groupby("cliente_nome", as_index=False)
         .agg(
             Faturamento_Total=("valor_total", "sum"),
             Num_Vendas=("valor_total", "count"),
             Ultima_Venda=("data_emissao", "max"),
             Primeira_Venda=("data_emissao", "min"),
-            Vendedora=("vendedor_nome", get_ultimo_vendedor),
         )
-        .reset_index()
     )
+    df_clientes["Vendedora"] = df_clientes["cliente_nome"].map(ultimo_vendedor_map).fillna("-")
 
-    # 2. Cálculo do Ticket Médio 6m Individual por Cliente
+    # 2. Cálculo Vetorizado do Ticket Médio 6m Individual por Cliente
     ticket_6m_map = calcular_ticket_medio_6m_clientes(df)
 
     # 3. Filtragem da Carteira pelo Dono Atual do Cliente (Vendedor da ÚLTIMA venda)
@@ -737,29 +767,23 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
     df_clientes["Ticket_Medio_6m"] = df_clientes["cliente_nome"].map(ticket_6m_map).fillna(0.0).astype(float)
     df_clientes["Faturamento_Total"] = df_clientes["Faturamento_Total"].astype(float)
 
-    def classificar_curva(ticket):
-        if ticket >= 5000:
-            return "AA"
-        elif ticket >= 3000:
-            return "A"
-        elif ticket >= 1500:
-            return "B"
-        elif ticket >= 700:
-            return "C"
-        return "D"
+    tm = df_clientes["Ticket_Medio_6m"]
+    df_clientes["Curva"] = np.select(
+        [tm >= 5000, tm >= 3000, tm >= 1500, tm >= 700],
+        ["AA", "A", "B", "C"],
+        default="D",
+    )
 
-    df_clientes["Curva"] = df_clientes["Ticket_Medio_6m"].apply(classificar_curva)
-
-    def definir_status(row):
-        if row["Primeira_Venda"].year == ano_vigente:
-            return "Novo"
-        elif row["Dias_Inatividade"] <= 30:
-            return "Ativo"
-        elif row["Dias_Inatividade"] <= 90:
-            return "Em Risco"
-        return "Inativo"
-
-    df_clientes["Status"] = df_clientes.apply(definir_status, axis=1)
+    dias_inat = df_clientes["Dias_Inatividade"]
+    df_clientes["Status"] = np.select(
+        [
+            df_clientes["Primeira_Venda"].dt.year == ano_vigente,
+            dias_inat <= 30,
+            dias_inat <= 90,
+        ],
+        ["Novo", "Ativo", "Em Risco"],
+        default="Inativo",
+    )
 
     curvas_aplicadas = filtros_curva or ["AA", "A", "B"]
     status_aplicados = filtros_status or ["Novo", "Ativo", "Em Risco", "Inativo"]
@@ -770,13 +794,13 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
     # 5. KPIs da Carteira
     kpis_carteira = {
         "total_clientes": len(df_clientes),
-        "clientes_ativos": len(df_clientes[df_clientes["Status"] == "Ativo"]),
-        "clientes_risco": len(df_clientes[df_clientes["Status"] == "Em Risco"]),
-        "clientes_inativos": len(df_clientes[df_clientes["Status"] == "Inativo"]),
-        "clientes_novos": len(df_clientes[df_clientes["Status"] == "Novo"]),
-        "prioritarios": len(df_clientes[df_clientes["Curva"].isin(["AA", "A", "B"])]),
+        "clientes_ativos": int((df_clientes["Status"] == "Ativo").sum()),
+        "clientes_risco": int((df_clientes["Status"] == "Em Risco").sum()),
+        "clientes_inativos": int((df_clientes["Status"] == "Inativo").sum()),
+        "clientes_novos": int((df_clientes["Status"] == "Novo").sum()),
+        "prioritarios": int(df_clientes["Curva"].isin(["AA", "A", "B"]).sum()),
         "faturamento_carteira": f"R$ {df_clientes['Faturamento_Total'].sum():,.2f}",
-        "potencial_risco_mensal": f"R$ {df_clientes[df_clientes['Status'] == 'Em Risco']['Ticket_Medio_6m'].sum():,.2f}",
+        "potencial_risco_mensal": f"R$ {df_clientes.loc[df_clientes['Status'] == 'Em Risco', 'Ticket_Medio_6m'].sum():,.2f}",
     }
 
     # 6. Gráficos de Prioridade
@@ -784,7 +808,7 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
     grafico_matriz_html = ""
     df_prioridade = df_filtrado
 
-    if not df_prioridade.empty:
+    if gerar_graficos and not df_prioridade.empty:
         fig_status = px.histogram(
             df_prioridade,
             x="Status",

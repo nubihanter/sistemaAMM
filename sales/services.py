@@ -1,7 +1,9 @@
+import builtins as _builtins
 from datetime import datetime, date, timedelta
 from decimal import Decimal
 import json
 from pathlib import Path
+import sys
 import time
 import traceback
 import unicodedata
@@ -13,6 +15,17 @@ from django.utils import timezone
 from integrations.piperun import PipeRunAPI
 from integrations.hardness import HardnessAPI
 from .models import NotaFiscal, MetaVendedor, Vendedor, LogSincronizacao
+
+
+def print(*args, **kwargs):
+    """Wrapper seguro de print para evitar UnicodeEncodeError em consoles Windows (cp1252)."""
+    try:
+        _builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        texto = " ".join(str(a) for a in args)
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        texto_seguro = texto.encode(enc, errors="replace").decode(enc, errors="replace")
+        _builtins.print(texto_seguro, **kwargs)
 
 
 def parse_decimal(valor):
@@ -52,6 +65,29 @@ def parse_data(data_val):
     return None
 
 
+def _extrair_contadores_resultado(resultado):
+    criados = 0
+    atualizados = 0
+    msg = "Sincronização concluída com sucesso."
+
+    if isinstance(resultado, tuple) and len(resultado) == 2:
+        criados, atualizados = int(resultado[0] or 0), int(resultado[1] or 0)
+        msg = f"Concluído: {criados} criados, {atualizados} atualizados."
+    elif isinstance(resultado, dict):
+        criados = int(
+            resultado.get("criados", 0)
+            or (resultado.get("estoque_criados", 0) + resultado.get("itens_criados", 0))
+        )
+        atualizados = int(
+            resultado.get("atualizados", 0)
+            or (resultado.get("estoque_atualizados", 0) + resultado.get("itens_atualizados", 0))
+        )
+        msg = resultado.get("mensagem") or (
+            f"Concluído: {criados} criados, {atualizados} atualizados."
+        )
+    return criados, atualizados, msg
+
+
 def registrar_execucao_sincronizacao(
     tipo: str,
     funcao_sync,
@@ -59,8 +95,8 @@ def registrar_execucao_sincronizacao(
     usuario: str = "Sistema",
 ):
     """
-    Executa uma função de sincronização registrando início, término, duração,
-    contadores e eventuais erros na tabela LogSincronizacao.
+    Executa uma função de sincronização de forma síncrona registrando início, término,
+    duração, contadores e eventuais erros na tabela LogSincronizacao.
     """
     log = LogSincronizacao.objects.create(
         tipo=tipo,
@@ -73,26 +109,7 @@ def registrar_execucao_sincronizacao(
     try:
         resultado = funcao_sync()
         duracao = round(time.monotonic() - t0, 2)
-
-        criados = 0
-        atualizados = 0
-        msg = "Sincronização concluída com sucesso."
-
-        if isinstance(resultado, tuple) and len(resultado) == 2:
-            criados, atualizados = int(resultado[0] or 0), int(resultado[1] or 0)
-            msg = f"Concluído: {criados} criados, {atualizados} atualizados."
-        elif isinstance(resultado, dict):
-            criados = int(
-                resultado.get("criados", 0)
-                or (resultado.get("estoque_criados", 0) + resultado.get("itens_criados", 0))
-            )
-            atualizados = int(
-                resultado.get("atualizados", 0)
-                or (resultado.get("estoque_atualizados", 0) + resultado.get("itens_atualizados", 0))
-            )
-            msg = resultado.get("mensagem") or (
-                f"Concluído: {criados} criados, {atualizados} atualizados."
-            )
+        criados, atualizados, msg = _extrair_contadores_resultado(resultado)
 
         log.status = "SUCESSO"
         log.finalizado_em = timezone.now()
@@ -113,9 +130,78 @@ def registrar_execucao_sincronizacao(
         raise
 
 
+def disparar_sincronizacao_background(
+    tipo: str,
+    funcao_sync,
+    origem: str = "MANUAL_PAINEL",
+    usuario: str = "Sistema",
+):
+    """
+    Dispara uma tarefa de sincronização em thread de segundo plano (não bloqueia a requisição HTTP)
+    e previne execuções concorrentes duplicadas do mesmo tipo nos últimos 15 minutos.
+    Retorna (iniciou_novo: bool, log: LogSincronizacao).
+    """
+    import threading
+    from django.db import close_old_connections
+
+    janela_ativa = timezone.now() - timedelta(minutes=15)
+    em_andamento = (
+        LogSincronizacao.objects.filter(
+            status="EM_ANDAMENTO",
+            iniciado_em__gte=janela_ativa,
+        )
+        .filter(Q(tipo=tipo) | Q(tipo="COMPLETA"))
+        .order_by("-iniciado_em")
+        .first()
+    )
+    if em_andamento:
+        return False, em_andamento
+
+    log = LogSincronizacao.objects.create(
+        tipo=tipo,
+        origem=origem,
+        status="EM_ANDAMENTO",
+        usuario=usuario or "Sistema",
+        mensagem="Sincronização em execução em segundo plano...",
+    )
+
+    def _worker():
+        close_old_connections()
+        t0 = time.monotonic()
+        try:
+            resultado = funcao_sync()
+            duracao = round(time.monotonic() - t0, 2)
+            criados, atualizados, msg = _extrair_contadores_resultado(resultado)
+            log.status = "SUCESSO"
+            log.finalizado_em = timezone.now()
+            log.duracao_segundos = duracao
+            log.registros_criados = criados
+            log.registros_atualizados = atualizados
+            log.mensagem = msg
+            log.save()
+        except Exception as exc:
+            duracao = round(time.monotonic() - t0, 2)
+            tb_curto = traceback.format_exc()[-1200:]
+            log.status = "ERRO"
+            log.finalizado_em = timezone.now()
+            log.duracao_segundos = duracao
+            log.mensagem = f"Erro: {exc}\n\n{tb_curto}"
+            log.save()
+        finally:
+            close_old_connections()
+
+    thread = threading.Thread(
+        target=_worker,
+        name=f"sync-{tipo.lower()}-{log.id}",
+        daemon=True,
+    )
+    thread.start()
+    return True, log
+
+
 def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
     """
-    Sincroniza notas fiscais do Hardness ERP.
+    Sincroniza notas fiscais do Hardness ERP em lotes otimizados (bulk_create / bulk_update).
     Se empresa_nome for informado, sincroniza apenas ela.
     Se empresa_nome for None ou 'TODAS', itera sobre todas as empresas do empresas_dict.
     """
@@ -155,51 +241,80 @@ def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
                 vendedores_lote = df_notas["vendedor.C007_Primeiro_Nome"].dropna().unique()
                 cadastrar_vendedores_hardness(vendedores_lote)
 
-        criadas_empresa = 0
-        atualizadas_empresa = 0
+        # Prepara registros deduplicados por numero_nota dentro da empresa
+        registros_preparados = {}
+        for item in df_notas.to_dict("records"):
+            numero_nf = str(item.get("T007_Numero_Nota_Fiscal", "")).strip()
+            t007_id = str(item.get("T007_Id", "")).strip()
+
+            if not numero_nf or numero_nf == "nan":
+                numero_nf = f"ID-{t007_id}"
+
+            if not numero_nf or numero_nf == "ID-":
+                continue
+
+            cancelada = str(item.get("T007_Flag_Cancelada", "N")).strip()
+            status = "CANCELADA" if cancelada == "S" else str(item.get("T005_Status", "FATURADA"))
+
+            registros_preparados[numero_nf] = {
+                "empresa": nome_empresa,
+                "serie": str(item.get("T007_Flag_ACP", "")).strip(),
+                "cliente_nome": str(
+                    item.get("D024_Nome_Empresa", item.get("D024_Nome_Fantasia", ""))
+                ).strip(),
+                "cliente_documento": str(item.get("D024_Id", "")).strip(),
+                "data_emissao": parse_data(item.get("T007_Data_Emissao")),
+                "valor_total": parse_decimal(item.get("T007_Valor_Total_Produtos")),
+                "cfop": str(item.get("D006_Codigo_CFOP", "")).strip(),
+                "status": status,
+                "vendedor_nome": str(item.get("vendedor.C007_Primeiro_Nome", "DESCONHECIDO"))
+                .strip()
+                .upper(),
+                "dados_brutos": {k: (None if pd.isna(v) else v) for k, v in item.items()},
+            }
+
+        existentes_map = {
+            nf.numero_nota: nf
+            for nf in NotaFiscal.objects.filter(
+                empresa=nome_empresa,
+                numero_nota__in=list(registros_preparados.keys()),
+            )
+        }
+
+        agora = timezone.now()
+        para_criar = []
+        para_atualizar = []
+        campos_update = [
+            "serie",
+            "cliente_nome",
+            "cliente_documento",
+            "data_emissao",
+            "valor_total",
+            "cfop",
+            "status",
+            "vendedor_nome",
+            "dados_brutos",
+            "data_sincronizacao",
+        ]
+
+        for numero_nf, defaults in registros_preparados.items():
+            nf_existente = existentes_map.get(numero_nf)
+            if nf_existente:
+                for campo, valor in defaults.items():
+                    setattr(nf_existente, campo, valor)
+                nf_existente.data_sincronizacao = agora
+                para_atualizar.append(nf_existente)
+            else:
+                para_criar.append(NotaFiscal(numero_nota=numero_nf, **defaults))
 
         with transaction.atomic():
-            for _, row in df_notas.iterrows():
-                item = row.to_dict()
+            if para_criar:
+                NotaFiscal.objects.bulk_create(para_criar, batch_size=500)
+            if para_atualizar:
+                NotaFiscal.objects.bulk_update(para_atualizar, fields=campos_update, batch_size=500)
 
-                numero_nf = str(item.get("T007_Numero_Nota_Fiscal", "")).strip()
-                t007_id = str(item.get("T007_Id", "")).strip()
-
-                if not numero_nf or numero_nf == "nan":
-                    numero_nf = f"ID-{t007_id}"
-
-                if not numero_nf or numero_nf == "ID-":
-                    continue
-
-                cancelada = str(item.get("T007_Flag_Cancelada", "N")).strip()
-                status = "CANCELADA" if cancelada == "S" else str(item.get("T005_Status", "FATURADA"))
-
-                defaults = {
-                    "empresa": nome_empresa,
-                    "serie": str(item.get("T007_Flag_ACP", "")).strip(),
-                    "cliente_nome": str(
-                        item.get("D024_Nome_Empresa", item.get("D024_Nome_Fantasia", ""))
-                    ).strip(),
-                    "cliente_documento": str(item.get("D024_Id", "")).strip(),
-                    "data_emissao": parse_data(item.get("T007_Data_Emissao")),
-                    "valor_total": parse_decimal(item.get("T007_Valor_Total_Produtos")),
-                    "cfop": str(item.get("D006_Codigo_CFOP", "")).strip(),
-                    "status": status,
-                    "vendedor_nome": str(item.get("vendedor.C007_Primeiro_Nome", "DESCONHECIDO"))
-                    .strip()
-                    .upper(),
-                    "dados_brutos": {k: (None if pd.isna(v) else v) for k, v in item.items()},
-                }
-
-                _, created = NotaFiscal.objects.update_or_create(
-                    numero_nota=numero_nf,
-                    defaults=defaults,
-                )
-
-                if created:
-                    criadas_empresa += 1
-                else:
-                    atualizadas_empresa += 1
+        criadas_empresa = len(para_criar)
+        atualizadas_empresa = len(para_atualizar)
 
         print(f"✅ {nome_empresa}: {criadas_empresa} notas criadas, {atualizadas_empresa} atualizadas.")
         total_criadas += criadas_empresa
@@ -232,30 +347,7 @@ def sincronizar_desde_ultimo_registro(empresa_nome=None):
     )
 
 
-def carregar_dados_metas():
-    """
-    Tenta carregar o JSON existente em disco ou dispara a API do PipeRun.
-    """
-    locais_possiveis = [
-        Path(__file__).resolve().parent.parent / "data" / "metas_por_vendedores.json",
-        Path(__file__).resolve().parent.parent / "integrations" / "data" / "metas_por_vendedores.json",
-    ]
-
-    for caminho in locais_possiveis:
-        if caminho.exists():
-            try:
-                with open(caminho, "r", encoding="utf-8") as f:
-                    dados = json.load(f)
-                    if dados and isinstance(dados, list):
-                        return dados
-            except Exception:
-                pass
-
-    api = PipeRunAPI()
-    return api.export_goals_by_seller(salvar_json=True)
-
-
-def sincronizar_metas_piperun():
+def sincronizar_metas_piperun(forcar_api: bool = True):
     """
     Busca as metas via PipeRunAPI e grava diretamente no banco de dados (MetaVendedor).
     Suporta tanto o formato stats.data.processed[].byUser quanto metas diretas por user_id.

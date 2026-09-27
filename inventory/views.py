@@ -6,6 +6,7 @@ from django.db.models import Q
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render, redirect
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
 from integrations.ca_epi import ConsultaCAClient
@@ -15,12 +16,24 @@ from .services import sincronizar_estoque_e_itens_rapido, sincronizar_vencimento
 
 
 def _usuario_pode_gerenciar_produtos(user) -> bool:
-    """Apenas perfis COMPRAS, ADMINISTRADOR e ALMOXARIFADO possuem acesso à página de Produtos e CA."""
+    """Apenas perfis COMPRAS, ADMINISTRADOR e ALMOXARIFADO possuem acesso à gestão e sincronização de estoque."""
     return bool(
         getattr(user, "is_admin", False)
         or getattr(user, "is_compras", False)
         or getattr(user, "is_almoxarifado", False)
     )
+
+
+def _obter_redirect_seguro(request, fallback: str) -> str:
+    """Garante que o redirecionamento pós-POST ocorra apenas para hosts permitidos."""
+    candidato = request.POST.get("next") or request.META.get("HTTP_REFERER") or ""
+    if candidato and url_has_allowed_host_and_scheme(
+        url=candidato,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return candidato
+    return fallback
 
 
 @login_required
@@ -100,6 +113,15 @@ def atualizar_parametros_produto_view(request):
     Permite estabelecer o Estoque Mínimo, Estoque Máximo e marcar/desmarcar
     o produto como Crítico (que não pode faltar) diretamente pelo dashboard.
     """
+    if not _usuario_pode_gerenciar_produtos(request.user):
+        if request.headers.get("x-requested-with") == "XMLHttpRequest":
+            return JsonResponse(
+                {"ok": False, "error": "Sem permissão para alterar parâmetros de estoque."},
+                status=403,
+            )
+        messages.error(request, "Sem permissão para alterar parâmetros de estoque.")
+        return redirect(_obter_redirect_seguro(request, "/inventory/dashboard/"))
+
     sku = request.POST.get("sku", "").strip()
     nome_fallback = request.POST.get("nome", sku).strip()
     marca_fallback = request.POST.get("marca", "N/A").strip()
@@ -161,14 +183,17 @@ def atualizar_parametros_produto_view(request):
         request,
         f"Parâmetros do produto {produto.sku} atualizados (Crítico: {'Sim' if produto.item_critico else 'Não'} | Mín: {produto.estoque_minimo} | Máx: {produto.estoque_maximo}).",
     )
-    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/inventory/dashboard/"
-    return redirect(next_url)
+    return redirect(_obter_redirect_seguro(request, "/inventory/dashboard/"))
 
 
 @login_required
 @require_POST
 def sincronizar_estoque_manual_view(request):
     """Dispara a sincronização incremental de estoque e itens vendidos do Hardness."""
+    if not _usuario_pode_gerenciar_produtos(request.user):
+        messages.error(request, "Sem permissão para disparar sincronização de estoque.")
+        return redirect(_obter_redirect_seguro(request, "/inventory/dashboard/"))
+
     from sales.services import registrar_execucao_sincronizacao
 
     try:
@@ -186,8 +211,7 @@ def sincronizar_estoque_manual_view(request):
     except Exception as e:
         messages.error(request, f"Erro ao sincronizar com o Hardness: {e}")
 
-    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/inventory/dashboard/"
-    return redirect(next_url)
+    return redirect(_obter_redirect_seguro(request, "/inventory/dashboard/"))
 
 
 @login_required
@@ -224,6 +248,8 @@ def exportar_compras_csv_view(request):
         marca_selecionada=marca_selecionada,
         status_filtro=status_filtro,
         apenas_criticos=apenas_criticos,
+        gerar_graficos=False,
+        incluir_aba_cliente=False,
     )
 
     wb = Workbook()
@@ -536,7 +562,7 @@ def salvar_produto_view(request):
 
     if not sku:
         messages.error(request, "O código (SKU) do produto é obrigatório.")
-        return redirect(request.POST.get("next") or "gestao_produtos")
+        return redirect(_obter_redirect_seguro(request, "/inventory/produtos/"))
 
     categoria_obj, _ = Categoria.objects.get_or_create(
         nome=categoria_nome,
@@ -547,7 +573,7 @@ def salvar_produto_view(request):
         produto = ProdutoEPI.objects.select_related("ca").filter(pk=produto_id).first()
         if not produto:
             messages.error(request, "Produto não encontrado para edição.")
-            return redirect(request.POST.get("next") or "gestao_produtos")
+            return redirect(_obter_redirect_seguro(request, "/inventory/produtos/"))
     else:
         produto = ProdutoEPI.objects.select_related("ca").filter(sku=sku).first()
 
@@ -626,8 +652,7 @@ def salvar_produto_view(request):
         f"Marca: {marca} | Tam: {tamanho_variacao or '-'} | "
         f"Mín: {estoque_minimo} | Máx: {estoque_maximo}]{msg_ca_extra}",
     )
-    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/inventory/produtos/"
-    return redirect(next_url)
+    return redirect(_obter_redirect_seguro(request, "/inventory/produtos/"))
 
 
 @login_required
@@ -645,7 +670,7 @@ def salvar_ou_consultar_ca_view(request):
     ca_limpo = ConsultaCAClient.limpar_numero_ca(numero_ca_raw)
     if not ca_limpo:
         messages.error(request, "Informe um número de CA válido.")
-        return redirect(request.POST.get("next") or "gestao_produtos")
+        return redirect(_obter_redirect_seguro(request, "/inventory/produtos/"))
 
     data_manual_str = request.POST.get("data_validade_manual", "").strip()
     fabricante_manual = request.POST.get("fabricante_manual", "").strip()
@@ -699,7 +724,6 @@ def salvar_ou_consultar_ca_view(request):
             f"Você pode informar a data de validade manualmente caso necessário.",
         )
 
-    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/inventory/produtos/"
-    return redirect(next_url)
+    return redirect(_obter_redirect_seguro(request, "/inventory/produtos/"))
 
 

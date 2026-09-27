@@ -1,4 +1,6 @@
+import builtins as _builtins
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -11,6 +13,17 @@ from integrations.ca_epi import ConsultaCAClient
 from integrations.hardness import HardnessAPI
 from sales.models import NotaFiscal
 from .models import Categoria, CertificadoAprovacao, ProdutoEPI, ItemVenda
+
+
+def print(*args, **kwargs):
+    """Wrapper seguro de print para evitar UnicodeEncodeError em consoles Windows (cp1252)."""
+    try:
+        _builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        texto = " ".join(str(a) for a in args)
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        texto_seguro = texto.encode(enc, errors="replace").decode(enc, errors="replace")
+        _builtins.print(texto_seguro, **kwargs)
 
 
 def parse_decimal(valor, default="0.00"):
@@ -271,11 +284,16 @@ def sincronizar_itens_venda_hardness(data_inicio="", data_fim="", empresa_nome=N
         empresas_alvo = api.empresas_dict
 
     # Mapa de NotaFiscal -> cliente_nome completo para enriquecer o nome do cliente sem truncamento
+    mapa_nf_empresa_cliente = {}
     mapa_nf_cliente = {}
     mapa_doc_cliente = {}
-    for nf in NotaFiscal.objects.values("numero_nota", "cliente_nome", "cliente_documento"):
+    for nf in NotaFiscal.objects.values("empresa", "numero_nota", "cliente_nome", "cliente_documento"):
         if nf["numero_nota"] and nf["cliente_nome"]:
-            mapa_nf_cliente[str(nf["numero_nota"]).strip()] = nf["cliente_nome"].strip()
+            num_limpo = str(nf["numero_nota"]).strip()
+            cli_limpo = nf["cliente_nome"].strip()
+            emp_limpa = str(nf.get("empresa") or "").strip()
+            mapa_nf_empresa_cliente[(emp_limpa, num_limpo)] = cli_limpo
+            mapa_nf_cliente[num_limpo] = cli_limpo
         if nf["cliente_documento"] and nf["cliente_nome"]:
             mapa_doc_cliente[str(nf["cliente_documento"]).strip()] = nf["cliente_nome"].strip()
 
@@ -310,83 +328,120 @@ def sincronizar_itens_venda_hardness(data_inicio="", data_fim="", empresa_nome=N
             print(f"ℹ️ Nenhum item de venda encontrado para {nome_empresa} no período.")
             continue
 
-        criados_emp = 0
-        atualizados_emp = 0
+        itens_preparados = {}
+        for item in df_itens.to_dict("records"):
+            cancelada = str(item.get("T007_Flag_Cancelada", "N")).strip().upper()
+            if cancelada == "S":
+                continue
+
+            t008_id = str(item.get("T008_Id") or "").strip()
+            if not t008_id or t008_id.lower() == "nan":
+                continue
+
+            id_item_erp = f"{empresa_id}-{t008_id}"
+            codigo_prod = str(item.get("T008_Codigo_Produto") or "").strip()
+            if not codigo_prod or codigo_prod.lower() == "nan":
+                continue
+
+            qtd = parse_decimal(item.get("T008_Quantidade"))
+            if qtd <= 0:
+                continue
+
+            numero_nf = str(item.get("T007_Numero_Nota_Fiscal") or "").strip()
+            if not numero_nf or numero_nf.lower() == "nan":
+                numero_nf = f"ID-{item.get('T008_T007_Id', t008_id)}"
+
+            dt_emissao = parse_data(item.get("T007_Data_Emissao"))
+            if not dt_emissao:
+                continue
+
+            d024_id = str(item.get("D024_Id") or "").strip()
+            cliente_nome = (
+                mapa_nf_empresa_cliente.get((nome_empresa, numero_nf))
+                or mapa_nf_cliente.get(numero_nf)
+                or mapa_doc_cliente.get(d024_id)
+                or str(item.get("D024_Nome_Fantasia") or item.get("substr(D024_Nome_Empresa,1,20)") or "CLIENTE NÃO IDENTIFICADO").strip()
+            )
+
+            vendedor_nome = str(item.get("vendedor.C007_Primeiro_Nome") or "DESCONHECIDO").strip().upper()
+            descricao_prod = str(item.get("T008_Descricao_Produto") or codigo_prod).strip()
+            marca = str(item.get("substr(D082_Marca,1,12)") or "").strip().upper()
+            unidade = str(item.get("D037_Unidade") or "UN").strip().upper()
+            cfop = str(item.get("D006_Codigo_CFOP") or "").strip()
+
+            val_unit = parse_decimal(item.get("T008_Valor_Preco_Sem_Desconto_Unitario"))
+            val_custo = parse_decimal(item.get("T008_Valor_Custo_Unitario"))
+            val_total = parse_decimal(item.get("T008_Valor_Total_Preco_Sem_Desconto") or item.get("Total_Valor_Total"))
+
+            produto_obj = produtos_map.get(codigo_prod)
+
+            itens_preparados[id_item_erp] = {
+                "empresa": nome_empresa,
+                "numero_nota": numero_nf,
+                "data_emissao": dt_emissao,
+                "cliente_nome": cliente_nome,
+                "cliente_id_erp": d024_id,
+                "vendedor_nome": vendedor_nome,
+                "produto": produto_obj,
+                "codigo_produto": codigo_prod,
+                "descricao_produto": descricao_prod,
+                "marca": marca,
+                "unidade": unidade,
+                "cfop": cfop,
+                "quantidade": qtd,
+                "valor_unitario": val_unit,
+                "valor_custo_unitario": val_custo,
+                "valor_total": val_total,
+            }
+
+        existentes_map = {}
+        chaves_lote = list(itens_preparados.keys())
+        for i in range(0, len(chaves_lote), 900):
+            fatia_ids = chaves_lote[i : i + 900]
+            for obj_it in ItemVenda.objects.filter(id_item_erp__in=fatia_ids):
+                existentes_map[obj_it.id_item_erp] = obj_it
+
+        agora = timezone.now()
+        para_criar = []
+        para_atualizar = []
+        campos_update = [
+            "empresa",
+            "numero_nota",
+            "data_emissao",
+            "cliente_nome",
+            "cliente_id_erp",
+            "vendedor_nome",
+            "produto",
+            "codigo_produto",
+            "descricao_produto",
+            "marca",
+            "unidade",
+            "cfop",
+            "quantidade",
+            "valor_unitario",
+            "valor_custo_unitario",
+            "valor_total",
+            "data_sincronizacao",
+        ]
+
+        for id_item_erp, defaults in itens_preparados.items():
+            it_existente = existentes_map.get(id_item_erp)
+            if it_existente:
+                for campo, valor in defaults.items():
+                    setattr(it_existente, campo, valor)
+                it_existente.data_sincronizacao = agora
+                para_atualizar.append(it_existente)
+            else:
+                para_criar.append(ItemVenda(id_item_erp=id_item_erp, **defaults))
 
         with transaction.atomic():
-            for _, row in df_itens.iterrows():
-                item = row.to_dict()
-                cancelada = str(item.get("T007_Flag_Cancelada", "N")).strip().upper()
-                if cancelada == "S":
-                    continue
+            if para_criar:
+                ItemVenda.objects.bulk_create(para_criar, batch_size=500)
+            if para_atualizar:
+                ItemVenda.objects.bulk_update(para_atualizar, fields=campos_update, batch_size=500)
 
-                t008_id = str(item.get("T008_Id") or "").strip()
-                if not t008_id or t008_id.lower() == "nan":
-                    continue
-
-                id_item_erp = f"{empresa_id}-{t008_id}"
-                codigo_prod = str(item.get("T008_Codigo_Produto") or "").strip()
-                if not codigo_prod or codigo_prod.lower() == "nan":
-                    continue
-
-                qtd = parse_decimal(item.get("T008_Quantidade"))
-                if qtd <= 0:
-                    continue
-
-                numero_nf = str(item.get("T007_Numero_Nota_Fiscal") or "").strip()
-                if not numero_nf or numero_nf.lower() == "nan":
-                    numero_nf = f"ID-{item.get('T008_T007_Id', t008_id)}"
-
-                dt_emissao = parse_data(item.get("T007_Data_Emissao"))
-                if not dt_emissao:
-                    continue
-
-                d024_id = str(item.get("D024_Id") or "").strip()
-                cliente_nome = (
-                    mapa_nf_cliente.get(numero_nf)
-                    or mapa_doc_cliente.get(d024_id)
-                    or str(item.get("D024_Nome_Fantasia") or item.get("substr(D024_Nome_Empresa,1,20)") or "CLIENTE NÃO IDENTIFICADO").strip()
-                )
-
-                vendedor_nome = str(item.get("vendedor.C007_Primeiro_Nome") or "DESCONHECIDO").strip().upper()
-                descricao_prod = str(item.get("T008_Descricao_Produto") or codigo_prod).strip()
-                marca = str(item.get("substr(D082_Marca,1,12)") or "").strip().upper()
-                unidade = str(item.get("D037_Unidade") or "UN").strip().upper()
-                cfop = str(item.get("D006_Codigo_CFOP") or "").strip()
-
-                val_unit = parse_decimal(item.get("T008_Valor_Preco_Sem_Desconto_Unitario"))
-                val_custo = parse_decimal(item.get("T008_Valor_Custo_Unitario"))
-                val_total = parse_decimal(item.get("T008_Valor_Total_Preco_Sem_Desconto") or item.get("Total_Valor_Total"))
-
-                produto_obj = produtos_map.get(codigo_prod)
-
-                defaults = {
-                    "empresa": nome_empresa,
-                    "numero_nota": numero_nf,
-                    "data_emissao": dt_emissao,
-                    "cliente_nome": cliente_nome,
-                    "cliente_id_erp": d024_id,
-                    "vendedor_nome": vendedor_nome,
-                    "produto": produto_obj,
-                    "codigo_produto": codigo_prod,
-                    "descricao_produto": descricao_prod,
-                    "marca": marca,
-                    "unidade": unidade,
-                    "cfop": cfop,
-                    "quantidade": qtd,
-                    "valor_unitario": val_unit,
-                    "valor_custo_unitario": val_custo,
-                    "valor_total": val_total,
-                }
-
-                _, created = ItemVenda.objects.update_or_create(
-                    id_item_erp=id_item_erp,
-                    defaults=defaults
-                )
-                if created:
-                    criados_emp += 1
-                else:
-                    atualizados_emp += 1
+        criados_emp = len(para_criar)
+        atualizados_emp = len(para_atualizar)
 
         print(f"✅ {nome_empresa}: {criados_emp} itens criados, {atualizados_emp} atualizados.")
         total_criados += criados_emp

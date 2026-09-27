@@ -1,10 +1,58 @@
 # sales/views.py
-from django.shortcuts import render, redirect
-from django.utils import timezone
+import calendar
+from datetime import date
+
 import pandas as pd
 from django.contrib.auth.decorators import login_required
-from .models import NotaFiscal, Vendedor
-from .dashboard_services import gerar_metricas_e_graficos, gerar_analise_clientes
+from django.http import JsonResponse
+from django.shortcuts import redirect, render
+from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
+
+from .dashboard_services import gerar_analise_clientes, gerar_metricas_e_graficos
+from .models import LogSincronizacao, NotaFiscal, Vendedor
+
+
+def _obter_redirect_seguro(request, fallback: str) -> str:
+    """Retorna uma URL de redirecionamento segura (mesmo host) ou o fallback."""
+    candidato = (
+        request.POST.get("next")
+        or request.GET.get("next")
+        or request.META.get("HTTP_REFERER")
+        or ""
+    ).strip()
+    if candidato and url_has_allowed_host_and_scheme(
+        url=candidato,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return candidato
+    return fallback
+
+
+def _carregar_df_notas_janela_comercial(ano_selecionado: int, mes_selecionado: int) -> pd.DataFrame:
+    """
+    Carrega apenas as Notas Fiscais necessárias para o Dashboard Comercial do mês/ano selecionado:
+    desde 01/01 do ano anterior (para comparativos YoY, MoM e gráficos de evolução de 12 meses)
+    até o último dia do mês selecionado.
+    """
+    inicio_janela = date(ano_selecionado - 1, 1, 1)
+    ultimo_dia_mes = calendar.monthrange(ano_selecionado, mes_selecionado)[1]
+    fim_janela = date(ano_selecionado, mes_selecionado, ultimo_dia_mes)
+
+    qs = (
+        NotaFiscal.objects.exclude(status="CANCELADA")
+        .filter(data_emissao__gte=inicio_janela, data_emissao__lte=fim_janela)
+        .values(
+            "numero_nota",
+            "cliente_nome",
+            "cliente_documento",
+            "data_emissao",
+            "valor_total",
+            "vendedor_nome",
+        )
+    )
+    return pd.DataFrame(list(qs))
 
 
 @login_required
@@ -16,6 +64,8 @@ def dashboard_vendas(request):
 
     try:
         mes_selecionado = int(request.GET.get("mes", hoje.month))
+        if not 1 <= mes_selecionado <= 12:
+            mes_selecionado = hoje.month
     except ValueError:
         mes_selecionado = hoje.month
     try:
@@ -23,30 +73,24 @@ def dashboard_vendas(request):
     except ValueError:
         ano_selecionado = hoje.year
 
-    # 1. Carrega todas as notas faturadas no pandas (incluindo cliente_documento para consolidação por CNPJ)
-    qs = NotaFiscal.objects.exclude(status="CANCELADA").values(
-        "numero_nota",
-        "cliente_nome",
-        "cliente_documento",
-        "data_emissao",
-        "valor_total",
-        "vendedor_nome",
-    )
-    df = pd.DataFrame(list(qs))
+    # 1. Carrega as notas faturadas dentro da janela de análise do período selecionado
+    df = _carregar_df_notas_janela_comercial(ano_selecionado, mes_selecionado)
 
-    vendedores_ativos = set(
-        Vendedor.objects.filter(ativo=True).values_list("nome_hardness", flat=True)
-    )
+    vendedores_ativos = {
+        str(v).strip().upper()
+        for v in Vendedor.objects.filter(ativo=True).values_list("nome_hardness", flat=True)
+        if v
+    }
 
-    # 2. Monta a lista filtrando pelo banco e removendo vazios / NAN
-    vendedores_disponiveis = []
-    if not df.empty and "vendedor_nome" in df.columns:
-        nomes_na_base = [
-            str(v).strip().upper()
-            for v in df["vendedor_nome"].dropna().unique()
-            if str(v).strip().upper() not in ["", "NAN", "NONE"]
-        ]
-        vendedores_disponiveis = sorted([v for v in nomes_na_base if v in vendedores_ativos])
+    # 2. Monta a lista de vendedores disponíveis usando consulta distinta indexada no banco
+    nomes_na_base = {
+        str(v).strip().upper()
+        for v in NotaFiscal.objects.exclude(status="CANCELADA")
+        .values_list("vendedor_nome", flat=True)
+        .distinct()
+        if v and str(v).strip().upper() not in ("", "NAN", "NONE")
+    }
+    vendedores_disponiveis = sorted(v for v in nomes_na_base if v in vendedores_ativos)
 
     # 3. REGRA DE PERFIL
     if user.is_vendedor:
@@ -73,6 +117,7 @@ def dashboard_vendas(request):
         mes_selecionado=mes_selecionado,
         ano_selecionado=ano_selecionado,
         incluir_margem_admin=pode_ver_margem,
+        gerar_graficos=True,
     )
 
     context = {
@@ -160,6 +205,7 @@ def analise_clientes_view(request):
         vendedora_selecionada=visao_selecionada,
         filtros_curva=curvas_selecionadas,
         filtros_status=status_selecionados,
+        gerar_graficos=True,
     )
 
     tabela_linhas = df_tabela.to_dict(orient="records") if not df_tabela.empty else []
@@ -196,6 +242,8 @@ def exportar_vendas_excel_view(request):
     hoje = timezone.now().date()
     try:
         mes_selecionado = int(request.GET.get("mes", hoje.month))
+        if not 1 <= mes_selecionado <= 12:
+            mes_selecionado = hoje.month
     except ValueError:
         mes_selecionado = hoje.month
     try:
@@ -210,15 +258,7 @@ def exportar_vendas_excel_view(request):
 
     pode_ver_margem = bool(getattr(user, "is_admin", False))
 
-    qs = NotaFiscal.objects.exclude(status="CANCELADA").values(
-        "numero_nota",
-        "cliente_nome",
-        "cliente_documento",
-        "data_emissao",
-        "valor_total",
-        "vendedor_nome",
-    )
-    df = pd.DataFrame(list(qs))
+    df = _carregar_df_notas_janela_comercial(ano_selecionado, mes_selecionado)
 
     metricas, _, _, _, _, _, tabela_notas = gerar_metricas_e_graficos(
         df=df,
@@ -226,6 +266,7 @@ def exportar_vendas_excel_view(request):
         mes_selecionado=mes_selecionado,
         ano_selecionado=ano_selecionado,
         incluir_margem_admin=pode_ver_margem,
+        gerar_graficos=False,
     )
 
     wb = Workbook()
@@ -362,6 +403,7 @@ def exportar_clientes_excel_view(request):
         vendedora_selecionada=visao_selecionada,
         filtros_curva=curvas_selecionadas,
         filtros_status=status_selecionados,
+        gerar_graficos=False,
     )
 
     wb = Workbook()
@@ -468,7 +510,7 @@ def painel_sincronizacao_view(request):
     from django.db.models import Max
     from django_apscheduler.models import DjangoJob, DjangoJobExecution
     from inventory.models import CertificadoAprovacao, ProdutoEPI
-    from .models import LogSincronizacao, MetaVendedor
+    from .models import MetaVendedor
 
     user = request.user
     if not getattr(user, "is_admin", False):
@@ -486,6 +528,7 @@ def painel_sincronizacao_view(request):
         logs_qs = logs_qs.filter(status=filtro_status)
 
     logs_sincronizacao = list(logs_qs[:50])
+    tem_sync_em_andamento = any(log.status == "EM_ANDAMENTO" for log in logs_sincronizacao)
 
     # Última execução de cada tipo
     ultimos_por_tipo = {}
@@ -521,6 +564,7 @@ def painel_sincronizacao_view(request):
 
     context = {
         "logs_sincronizacao": logs_sincronizacao,
+        "tem_sync_em_andamento": tem_sync_em_andamento,
         "ultimos_por_tipo": ultimos_por_tipo,
         "jobs_agendados": jobs_agendados,
         "execucoes_scheduler": execucoes_scheduler,
@@ -534,12 +578,56 @@ def painel_sincronizacao_view(request):
 
 
 @login_required
+def status_sincronizacao_json_view(request):
+    """Retorna o status atual das sincronizações em andamento para polling assíncrono do painel."""
+    user = request.user
+    if not getattr(user, "is_admin", False):
+        return JsonResponse({"erro": "Sem permissão."}, status=403)
+
+    em_andamento_qs = LogSincronizacao.objects.filter(status="EM_ANDAMENTO").order_by("-iniciado_em")
+    logs_ativos = [
+        {
+            "id": log.id,
+            "tipo": log.tipo,
+            "tipo_display": log.get_tipo_display(),
+            "iniciado_em": log.iniciado_em.strftime("%H:%M:%S"),
+        }
+        for log in em_andamento_qs[:10]
+    ]
+    ultimo = LogSincronizacao.objects.order_by("-iniciado_em").first()
+    ultimo_dados = None
+    if ultimo:
+        ultimo_dados = {
+            "id": ultimo.id,
+            "tipo": ultimo.tipo,
+            "tipo_display": ultimo.get_tipo_display(),
+            "status": ultimo.status,
+            "mensagem": ultimo.mensagem,
+            "duracao_segundos": ultimo.duracao_segundos,
+            "registros_criados": ultimo.registros_criados,
+            "registros_atualizados": ultimo.registros_atualizados,
+        }
+
+    return JsonResponse(
+        {
+            "em_andamento": len(logs_ativos) > 0,
+            "logs_em_andamento": logs_ativos,
+            "ultimo_log": ultimo_dados,
+        }
+    )
+
+
+@login_required
 def disparar_sincronizacao_view(request):
-    """Executa manualmente uma tarefa de sincronização solicitada no painel."""
+    """
+    Dispara manualmente uma tarefa de sincronização solicitada no painel.
+    Por padrão executa em background (thread assíncrona) para evitar timeout HTTP,
+    com proteção contra disparos duplicados simultâneos.
+    """
     from django.contrib import messages
-    from django.views.decorators.http import require_POST
     from inventory.services import sincronizar_estoque_e_itens_rapido, sincronizar_vencimentos_ca
     from .services import (
+        disparar_sincronizacao_background,
         registrar_execucao_sincronizacao,
         sincronizar_desde_ultimo_registro,
         sincronizar_metas_piperun,
@@ -551,129 +639,126 @@ def disparar_sincronizacao_view(request):
 
     user = request.user
     if not getattr(user, "is_admin", False):
-        messages.error(request, "Apenas o perfil Administrador possui permissão para acessar ou disparar sincronizações.")
+        messages.error(
+            request,
+            "Apenas o perfil Administrador possui permissão para acessar ou disparar sincronizações.",
+        )
         if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS"):
             return redirect("dashboard_estoque")
         return redirect("dashboard_vendas")
 
     acao = request.POST.get("acao", "").strip()
+    modo_sincrono = request.POST.get("modo", "").strip().lower() == "sincrono"
     nome_usuario = user.username
 
-    try:
-        if acao == "notas_hardness":
-            data_inicio = request.POST.get("data_inicio", "").strip()
-            data_fim = request.POST.get("data_fim", "").strip()
-            if data_inicio:
-                # Converte YYYY-MM-DD (input type=date) para DD/MM/YYYY se necessário
-                if "-" in data_inicio and len(data_inicio) == 10:
-                    partes = data_inicio.split("-")
-                    data_inicio = f"{partes[2]}/{partes[1]}/{partes[0]}"
-                if data_fim and "-" in data_fim and len(data_fim) == 10:
-                    partes_f = data_fim.split("-")
-                    data_fim = f"{partes_f[2]}/{partes_f[1]}/{partes_f[0]}"
-                else:
-                    data_fim = timezone.now().strftime("%d/%m/%Y")
+    tipo_sync = None
+    funcao_sync = None
 
-                _, (criadas, atualizadas) = registrar_execucao_sincronizacao(
-                    tipo="NOTAS_HARDNESS",
-                    funcao_sync=lambda: sincronizar_notas_hardness(
-                        data_inicio=data_inicio, data_fim=data_fim
-                    ),
-                    origem="MANUAL_PAINEL",
-                    usuario=nome_usuario,
+    if acao == "notas_hardness":
+        tipo_sync = "NOTAS_HARDNESS"
+        data_inicio = request.POST.get("data_inicio", "").strip()
+        data_fim = request.POST.get("data_fim", "").strip()
+        if data_inicio:
+            if "-" in data_inicio and len(data_inicio) == 10:
+                partes = data_inicio.split("-")
+                data_inicio = f"{partes[2]}/{partes[1]}/{partes[0]}"
+            if data_fim and "-" in data_fim and len(data_fim) == 10:
+                partes_f = data_fim.split("-")
+                data_fim = f"{partes_f[2]}/{partes_f[1]}/{partes_f[0]}"
+            else:
+                data_fim = timezone.now().strftime("%d/%m/%Y")
+
+            funcao_sync = lambda di=data_inicio, df_str=data_fim: sincronizar_notas_hardness(
+                data_inicio=di, data_fim=df_str
+            )
+        else:
+            funcao_sync = sincronizar_desde_ultimo_registro
+
+    elif acao == "estoque_hardness":
+        tipo_sync = "ESTOQUE_HARDNESS"
+        try:
+            dias = max(5, min(365, int(request.POST.get("dias_retroativos", 60))))
+        except ValueError:
+            dias = 60
+        funcao_sync = lambda d=dias: sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=d)
+
+    elif acao == "metas_piperun":
+        tipo_sync = "METAS_PIPERUN"
+        funcao_sync = lambda: sincronizar_metas_piperun(forcar_api=True)
+
+    elif acao == "ca_epi":
+        tipo_sync = "CONSULTA_CA"
+        forcar = request.POST.get("forcar_todos") in ("1", "true", "on", "True")
+
+        def _exec_ca(f=forcar):
+            r = sincronizar_vencimentos_ca(forcar_todos=f, max_workers=6)
+            return {
+                "criados": 0,
+                "atualizados": r.get("atualizados", 0),
+                "mensagem": (
+                    f"Processados: {r.get('total', 0)} | Atualizados: {r.get('atualizados', 0)} | "
+                    f"Vencidos: {r.get('vencidos', 0)} | Não encontrados: {r.get('nao_encontrados', 0)}"
+                ),
+            }
+
+        funcao_sync = _exec_ca
+
+    elif acao == "completa":
+        tipo_sync = "COMPLETA"
+
+        def _exec_completa():
+            nf_c, nf_a = sincronizar_desde_ultimo_registro()
+            res_est = sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=60)
+            mt_c, mt_a = sincronizar_metas_piperun(forcar_api=True)
+            tot_c = nf_c + res_est.get("estoque_criados", 0) + res_est.get("itens_criados", 0) + mt_c
+            tot_a = nf_a + res_est.get("estoque_atualizados", 0) + res_est.get("itens_atualizados", 0) + mt_a
+            return {
+                "criados": tot_c,
+                "atualizados": tot_a,
+                "mensagem": (
+                    f"NFs: +{nf_c}/{nf_a} | Estoque: +{res_est.get('estoque_criados', 0)}/{res_est.get('estoque_atualizados', 0)} | "
+                    f"Itens: +{res_est.get('itens_criados', 0)}/{res_est.get('itens_atualizados', 0)} | Metas: +{mt_c}/{mt_a}"
+                ),
+            }
+
+        funcao_sync = _exec_completa
+
+    else:
+        messages.warning(request, "Ação de sincronização não reconhecida.")
+        return redirect(_obter_redirect_seguro(request, "/sales/sincronizacao/"))
+
+    try:
+        if modo_sincrono:
+            log, _ = registrar_execucao_sincronizacao(
+                tipo=tipo_sync,
+                funcao_sync=funcao_sync,
+                origem="MANUAL_PAINEL",
+                usuario=nome_usuario,
+            )
+            messages.success(
+                request,
+                f"Sincronização ({log.get_tipo_display()}) concluída com sucesso! {log.mensagem}",
+            )
+        else:
+            log, iniciou = disparar_sincronizacao_background(
+                tipo=tipo_sync,
+                funcao_sync=funcao_sync,
+                origem="MANUAL_PAINEL",
+                usuario=nome_usuario,
+            )
+            if iniciou:
+                messages.info(
+                    request,
+                    f"Sincronização ({log.get_tipo_display()}) iniciada em segundo plano! "
+                    f"O painel atualizará automaticamente assim que a execução terminar.",
                 )
             else:
-                _, (criadas, atualizadas) = registrar_execucao_sincronizacao(
-                    tipo="NOTAS_HARDNESS",
-                    funcao_sync=sincronizar_desde_ultimo_registro,
-                    origem="MANUAL_PAINEL",
-                    usuario=nome_usuario,
+                messages.warning(
+                    request,
+                    f"Já existe uma sincronização ({log.get_tipo_display()}) em andamento "
+                    f"iniciada às {log.iniciado_em.strftime('%H:%M:%S')}. Aguarde a conclusão.",
                 )
-            messages.success(
-                request,
-                f"Notas Fiscais (Hardness) sincronizadas com sucesso! {criadas} novas / {atualizadas} atualizadas.",
-            )
-
-        elif acao == "estoque_hardness":
-            try:
-                dias = max(5, min(365, int(request.POST.get("dias_retroativos", 60))))
-            except ValueError:
-                dias = 60
-            _, res = registrar_execucao_sincronizacao(
-                tipo="ESTOQUE_HARDNESS",
-                funcao_sync=lambda: sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=dias),
-                origem="MANUAL_PAINEL",
-                usuario=nome_usuario,
-            )
-            messages.success(
-                request,
-                f"Estoque & Itens (Hardness) sincronizados! Estoque: {res['estoque_criados']} novos / {res['estoque_atualizados']} atualizados | "
-                f"Itens: {res['itens_criados']} novos / {res['itens_atualizados']} atualizados.",
-            )
-
-        elif acao == "metas_piperun":
-            _, (criadas, atualizadas) = registrar_execucao_sincronizacao(
-                tipo="METAS_PIPERUN",
-                funcao_sync=lambda: sincronizar_metas_piperun(forcar_api=True),
-                origem="MANUAL_PAINEL",
-                usuario=nome_usuario,
-            )
-            messages.success(
-                request,
-                f"Metas do PipeRun sincronizadas com sucesso! {criadas} novas / {atualizadas} atualizadas.",
-            )
-
-        elif acao == "ca_epi":
-            forcar = request.POST.get("forcar_todos") in ("1", "true", "on", "True")
-
-            def _exec_ca():
-                r = sincronizar_vencimentos_ca(forcar_todos=forcar, max_workers=6)
-                return {
-                    "criados": 0,
-                    "atualizados": r.get("atualizados", 0),
-                    "mensagem": (
-                        f"Processados: {r.get('total', 0)} | Atualizados: {r.get('atualizados', 0)} | "
-                        f"Vencidos: {r.get('vencidos', 0)} | Não encontrados: {r.get('nao_encontrados', 0)}"
-                    ),
-                }
-
-            _, res_ca = registrar_execucao_sincronizacao(
-                tipo="CONSULTA_CA",
-                funcao_sync=_exec_ca,
-                origem="MANUAL_PAINEL",
-                usuario=nome_usuario,
-            )
-            messages.success(request, f"Consulta de CAs concluída! {res_ca['mensagem']}")
-
-        elif acao == "completa":
-            def _exec_completa():
-                nf_c, nf_a = sincronizar_desde_ultimo_registro()
-                res_est = sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=60)
-                mt_c, mt_a = sincronizar_metas_piperun(forcar_api=True)
-                tot_c = nf_c + res_est.get("estoque_criados", 0) + res_est.get("itens_criados", 0) + mt_c
-                tot_a = nf_a + res_est.get("estoque_atualizados", 0) + res_est.get("itens_atualizados", 0) + mt_a
-                return {
-                    "criados": tot_c,
-                    "atualizados": tot_a,
-                    "mensagem": (
-                        f"NFs: +{nf_c}/{nf_a} | Estoque: +{res_est.get('estoque_criados', 0)}/{res_est.get('estoque_atualizados', 0)} | "
-                        f"Itens: +{res_est.get('itens_criados', 0)}/{res_est.get('itens_atualizados', 0)} | Metas: +{mt_c}/{mt_a}"
-                    ),
-                }
-
-            _, res_comp = registrar_execucao_sincronizacao(
-                tipo="COMPLETA",
-                funcao_sync=_exec_completa,
-                origem="MANUAL_PAINEL",
-                usuario=nome_usuario,
-            )
-            messages.success(request, f"Sincronização completa concluída! ({res_comp['mensagem']})")
-
-        else:
-            messages.warning(request, "Ação de sincronização não reconhecida.")
-
     except Exception as exc:
         messages.error(request, f"Falha durante a sincronização ({acao}): {exc}")
 
-    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/sales/sincronizacao/"
-    return redirect(next_url)
+    return redirect(_obter_redirect_seguro(request, "/sales/sincronizacao/"))

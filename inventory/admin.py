@@ -133,6 +133,11 @@ class CertificadoAprovacaoAdmin(admin.ModelAdmin):
     @admin.display(description="Situação do CA")
     def badge_validade(self, obj):
         dias = obj.dias_para_vencer
+        if dias is None:
+            return format_html(
+                '<span style="background-color: #f1f5f9; color: #475569; padding: 3px 8px; border-radius: 4px; font-weight: bold;">{}</span>',
+                "Sem data / Pendente",
+            )
         if dias < 0:
             return format_html(
                 '<span style="background-color: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 4px; font-weight: bold;">Vencido há {} dias</span>',

@@ -60,6 +60,19 @@
     </div>
 </div>
 
+{% if tem_sync_em_andamento %}
+<div id="sync-live-banner" class="alert alert-warning d-flex align-items-center justify-content-between shadow-sm mb-3 py-2" role="alert">
+    <div class="d-flex align-items-center gap-2">
+        <div class="spinner-border spinner-border-sm text-warning-emphasis" role="status" aria-hidden="true"></div>
+        <div>
+            <strong>Sincronização em andamento em segundo plano...</strong>
+            <span class="small text-muted ms-1">A página será atualizada automaticamente assim que a execução terminar.</span>
+        </div>
+    </div>
+    <span class="badge bg-warning text-dark">Monitorando...</span>
+</div>
+{% endif %}
+
 <!-- Linha 1: Resumo do Estado Atual do Banco de Dados -->
 <div class="row g-3 mb-4">
     <div class="col-xl-3 col-md-6">
@@ -116,7 +129,7 @@
                     {% endif %}
                 </div>
                 <p class="small text-muted mb-2">
-                    Busca notas fiscais emitidas ou canceladas nas 3 empresas. Em branco = sincronização incremental rápida (últimos 3 dias).
+                    Busca notas fiscais emitidas ou canceladas nas empresas do grupo (AMM EPIS e AMM Soluções). Em branco = sincronização incremental rápida (últimos 3 dias).
                 </p>
             </div>
             <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">
@@ -152,7 +165,7 @@
                     {% endif %}
                 </div>
                 <p class="small text-muted mb-2">
-                    Atualiza saldos de estoque das 3 empresas, ordens de compra pendentes e itens faturados no período.
+                    Atualiza o catálogo e saldos de estoque, ordens de compra pendentes e itens faturados nas empresas do grupo.
                 </p>
             </div>
             <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">
@@ -409,9 +422,26 @@
             const btn = form.querySelector('.btn-sync-submit');
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Sincronizando... aguarde';
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Disparando...';
             }
         });
     });
+
+    {% if tem_sync_em_andamento %}
+    (function() {
+        const statusUrl = "{% url 'status_sincronizacao_json' %}";
+        const pollInterval = setInterval(function() {
+            fetch(statusUrl, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+                .then(function(res) { return res.ok ? res.json() : null; })
+                .then(function(data) {
+                    if (data && !data.em_andamento) {
+                        clearInterval(pollInterval);
+                        window.location.reload();
+                    }
+                })
+                .catch(function() {});
+        }, 3000);
+    })();
+    {% endif %}
 </script>
 {% endblock %}

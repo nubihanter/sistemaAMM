@@ -1,15 +1,15 @@
 from django.db import models
 
 class NotaFiscal(models.Model):
-    empresa = models.CharField(max_length=100, verbose_name="Empresa")
-    numero_nota = models.CharField(max_length=50, unique=True, verbose_name="Número da NF")
+    empresa = models.CharField(max_length=100, db_index=True, verbose_name="Empresa")
+    numero_nota = models.CharField(max_length=50, db_index=True, verbose_name="Número da NF")
     serie = models.CharField(max_length=20, blank=True, null=True, verbose_name="Série")
     cliente_nome = models.CharField(max_length=255, blank=True, null=True, verbose_name="Cliente / Razão Social")
-    cliente_documento = models.CharField(max_length=30, blank=True, null=True, verbose_name="CNPJ/CPF")
-    data_emissao = models.DateField(blank=True, null=True, verbose_name="Data de Emissão")
+    cliente_documento = models.CharField(max_length=30, blank=True, null=True, db_index=True, verbose_name="CNPJ/CPF")
+    data_emissao = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Emissão")
     valor_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Total")
     cfop = models.CharField(max_length=10, blank=True, null=True, verbose_name="CFOP")
-    status = models.CharField(max_length=50, blank=True, null=True, verbose_name="Status")
+    status = models.CharField(max_length=50, blank=True, null=True, db_index=True, verbose_name="Status")
     vendedor_nome = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Vendedor")
     
     # Campo JSON para armazenar todos os campos brutos vindos do Hardness (evita perder dados)
@@ -19,12 +19,15 @@ class NotaFiscal(models.Model):
     class Meta:
         verbose_name = "Nota Fiscal"
         verbose_name_plural = "Notas Fiscais"
+        unique_together = ("empresa", "numero_nota")
         ordering = ["-data_emissao", "-numero_nota"]
+        indexes = [
+            models.Index(fields=["status", "data_emissao"]),
+            models.Index(fields=["vendedor_nome", "data_emissao"]),
+        ]
 
     def __str__(self):
-        return f"NF {self.numero_nota} - {self.cliente_nome}"
-
-# sales/models.py (adicione ao final do arquivo)
+        return f"NF {self.numero_nota} ({self.empresa}) - {self.cliente_nome}"
 
 class MetaVendedor(models.Model):
     vendedor_nome = models.CharField(max_length=100, db_index=True, verbose_name="Vendedor / Empresa")

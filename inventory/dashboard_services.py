@@ -51,12 +51,14 @@ STATUS_CONFIG = {
 
 def gerar_analise_estoque_e_compras(
     dias_analise: int = 90,
-    cobertura_meses: float = 3.0,
-    teto_meses: float = 6.0,
+    cobertura_meses: float = 2.0,
+    teto_meses: float = 4.0,
     cliente_selecionado: str = "",
     marca_selecionada: str = "TODAS",
     status_filtro: str = "TODOS",
     apenas_criticos: bool = False,
+    gerar_graficos: bool = True,
+    incluir_aba_cliente: bool = True,
 ):
     hoje = timezone.now().date()
     data_corte = hoje - timedelta(days=dias_analise)
@@ -274,14 +276,16 @@ def gerar_analise_estoque_e_compras(
         | (df_base["estoque_minimo"] > 0)
     ].copy()
 
-    # Preço médio de venda e custo estimado
-    df_base["Preco_Medio_Venda"] = df_base.apply(
-        lambda r: (r["Faturamento_Periodo"] / r["Qtd_Vendida"]) if r["Qtd_Vendida"] > 0 else r["preco_venda"],
-        axis=1,
+    # Preço médio de venda e custo estimado (vetorizados)
+    df_base["Preco_Medio_Venda"] = np.where(
+        df_base["Qtd_Vendida"] > 0,
+        df_base["Faturamento_Periodo"] / df_base["Qtd_Vendida"].replace(0.0, np.nan),
+        df_base["preco_venda"],
     )
-    df_base["Custo_Ref"] = df_base.apply(
-        lambda r: r["preco_custo"] if r["preco_custo"] > 0 else (r["Preco_Medio_Venda"] * 0.65),
-        axis=1,
+    df_base["Custo_Ref"] = np.where(
+        df_base["preco_custo"] > 0,
+        df_base["preco_custo"],
+        df_base["Preco_Medio_Venda"] * 0.65,
     )
 
     # Média mensal de giro
@@ -297,36 +301,34 @@ def gerar_analise_estoque_e_compras(
         df_base["Pct_Faturamento"] = 0.0
         df_base["Pct_Acumulado"] = 100.0
 
-    def classificar_curva_abc(row):
-        if row["Faturamento_Periodo"] <= 0:
-            return "S/V"
-        if row["Pct_Acumulado"] <= 80.0 or row.name == 0:
-            return "A"
-        elif row["Pct_Acumulado"] <= 95.0:
-            return "B"
-        return "C"
+    is_first_row = df_base.index == 0
+    df_base["Curva_ABC"] = np.select(
+        [
+            df_base["Faturamento_Periodo"] <= 0,
+            (df_base["Pct_Acumulado"] <= 80.0) | is_first_row,
+            df_base["Pct_Acumulado"] <= 95.0,
+        ],
+        ["S/V", "A", "B"],
+        default="C",
+    )
 
-    df_base["Curva_ABC"] = df_base.apply(classificar_curva_abc, axis=1)
+    # Classificação Vetorizada de Padrão de Demanda (Recorrente vs Esporádico vs Sem Giro)
+    if dias_analise >= 60:
+        cond_esporadico = (df_base["Num_Pedidos"] <= 1) | (
+            (df_base["Num_Pedidos"] == 2) & (df_base["Meses_Com_Venda"] == 1) & (df_base["Num_Clientes"] == 1)
+        )
+    else:
+        cond_esporadico = (df_base["Num_Pedidos"] == 1) & (df_base["Num_Clientes"] == 1)
 
-    # Classificação de Padrão de Demanda (Recorrente vs Esporádico vs Sem Giro)
-    def classificar_padrao_demanda(row):
-        if row["Qtd_Vendida"] <= 0:
-            return "Sem Giro"
-        # Se o usuário já marcou como crítico, trata como demanda recorrente prioritária
-        if row["item_critico"]:
-            return "Recorrente"
-        # Para janelas >= 60 dias: se vendeu em apenas 1 pedido ou (<= 2 pedidos em 1 único mês e 1 único cliente) -> Esporádico
-        if dias_analise >= 60:
-            if row["Num_Pedidos"] <= 1:
-                return "Esporádico"
-            if row["Num_Pedidos"] == 2 and row["Meses_Com_Venda"] == 1 and row["Num_Clientes"] == 1:
-                return "Esporádico"
-        else:
-            if row["Num_Pedidos"] == 1 and row["Num_Clientes"] == 1:
-                return "Esporádico"
-        return "Recorrente"
-
-    df_base["Padrao_Demanda"] = df_base.apply(classificar_padrao_demanda, axis=1)
+    df_base["Padrao_Demanda"] = np.select(
+        [
+            df_base["Qtd_Vendida"] <= 0,
+            df_base["item_critico"],
+            cond_esporadico,
+        ],
+        ["Sem Giro", "Recorrente", "Esporádico"],
+        default="Recorrente",
+    )
 
     # Candidato sugerido a Crítico (Curva A ou alta frequência >= 5 pedidos no período)
     df_base["Sugestao_Critico"] = (
@@ -339,7 +341,6 @@ def gerar_analise_estoque_e_compras(
         """
         Projeta a demanda acumulada para os próximos `meses_frente` meses usando regressão linear:
         y(t) = a + b*t, onde t = 1..N são os meses históricos e t = N+1..N+M são os meses futuros.
-        Ex.: Histórico [1, 2, 3] (media=2, b=+1) -> Mês 4 = 4 (1M cobertura), Mês 4+5 = 4+5 = 9 (2M cobertura).
         """
         if media_mes <= 0 and tendencia_mes <= 0:
             return 0.0
@@ -357,8 +358,8 @@ def gerar_analise_estoque_e_compras(
             total_projetado += frac * demanda_mes_frac
         return total_projetado
 
-    # Cálculo de Projeção Linear de Cobertura, Teto de Excesso, Sugestão de Compra e Status
-    def calcular_planejamento_linha(row):
+    # Cálculo de Projeção Linear de Cobertura, Teto de Excesso, Sugestão de Compra e Status (via tuplas rápidas)
+    def calcular_planejamento_tupla(row):
         est_atual = int(row["estoque_atual"])
         est_Disp = max(0, est_atual)
         qtd_oc = max(0, int(row["qtd_ordem_compra"]))
@@ -368,35 +369,29 @@ def gerar_analise_estoque_e_compras(
         tendencia_mes = float(row["Tendencia_Mes"])
         padrao = row["Padrao_Demanda"]
 
-        # Demanda projetada linearmente para o próximo mês (t = N + 1) e para o horizonte de cobertura
         demanda_prox_mes = round(projetar_demanda_linear(media_mes, tendencia_mes, 1.0), 1)
         projecao_cobertura = int(math.ceil(projetar_demanda_linear(media_mes, tendencia_mes, cobertura_meses)))
         meta_estoque = max(projecao_cobertura, est_min)
 
-        # Limite máximo (Teto para alerta de "Estoque Acima do Necessário")
         if est_max_manual > 0:
             teto_estoque = est_max_manual
         else:
             projecao_teto = int(math.ceil(projetar_demanda_linear(media_mes, tendencia_mes, teto_meses)))
             teto_estoque = max(projecao_teto, int(math.ceil(media_mes * teto_meses)), est_min * 2, 10)
 
-        # Cobertura atual em meses (considerando o ritmo projetado ou média)
         taxa_giro_ref = max(demanda_prox_mes, media_mes * 0.25) if media_mes > 0 else 0.0
         if taxa_giro_ref > 0:
             cobertura_atual_meses = round(max(0.0, float(est_atual)) / taxa_giro_ref, 1)
         else:
             cobertura_atual_meses = 99.0 if est_atual > 0 else 0.0
 
-        # Última venda conhecida (histórico geral ou ERP)
         ult_venda = ultimas_vendas_globais.get(row["codigo_produto"]) or row["data_ultima_saida"]
         dias_sem_vender = (hoje - ult_venda).days if ult_venda else None
 
-        # Determinação do Status e da Qtd Sugerida de Compra
         qtd_sugerida_compra = 0
         qtd_excesso = 0
 
         if row["Qtd_Vendida"] <= 0:
-            # Sem vendas no período analisado
             if (row["item_critico"] or est_min > 0) and (est_Disp + qtd_oc) < est_min:
                 status = "CRÍTICO / RUPTURA"
                 qtd_sugerida_compra = max(0, est_min - est_Disp - qtd_oc)
@@ -406,7 +401,6 @@ def gerar_analise_estoque_e_compras(
             else:
                 status = "SEM ESTOQUE / INATIVO"
         elif padrao == "Esporádico" and not row["item_critico"]:
-            # Item esporádico: avisa para não comprar no automático, exceto se tiver estoque mínimo fixado
             if est_min > 0 and (est_Disp + qtd_oc) < est_min:
                 status = "COMPRAR"
                 qtd_sugerida_compra = max(0, est_min - est_Disp - qtd_oc)
@@ -417,9 +411,7 @@ def gerar_analise_estoque_e_compras(
                 status = "ESPORÁDICO"
                 qtd_sugerida_compra = 0
         else:
-            # Item Recorrente ou Item Crítico
             saldo_projetado = est_atual + qtd_oc
-            # Ruptura / Crítico: zerado/negativo, ou abaixo do mínimo definido, ou cobertura < 15 dias (0.5 mês)
             if (
                 est_atual <= 0
                 or (est_min > 0 and saldo_projetado <= est_min)
@@ -442,7 +434,6 @@ def gerar_analise_estoque_e_compras(
         valor_estoque_custo = round(max(0, est_atual) * custo_unit, 2)
         valor_excesso_custo = round(max(0, qtd_excesso) * custo_unit, 2)
 
-        # Cálculo de Dias para Vencer CA
         ca_num = str(row.get("ca__numero_ca") or "-").strip()
         ca_dt_raw = row.get("ca__data_validade")
         tem_validade_ca = False
@@ -475,52 +466,53 @@ def gerar_analise_estoque_e_compras(
             validade_ca_str = "Pendente"
             status_ca = "PENDENTE"
 
-        return pd.Series(
-            [
-                demanda_prox_mes,
-                projecao_cobertura,
-                meta_estoque,
-                teto_estoque,
-                cobertura_atual_meses,
-                status,
-                STATUS_CONFIG[status]["badge"],
-                STATUS_CONFIG[status]["ordem"],
-                qtd_sugerida_compra,
-                valor_compra_estimado,
-                qtd_excesso,
-                valor_estoque_custo,
-                valor_excesso_custo,
-                ult_venda.strftime("%d/%m/%Y") if ult_venda else "Sem registro",
-                dias_sem_vender if dias_sem_vender is not None else 999,
-                tem_validade_ca,
-                dias_para_vencer_ca,
-                validade_ca_str,
-                status_ca,
-            ],
-            index=[
-                "Demanda_Prox_Mes",
-                "Projecao_Cobertura",
-                "Meta_Estoque",
-                "Teto_Estoque",
-                "Cobertura_Meses",
-                "Status",
-                "Badge_Class",
-                "Ordem_Status",
-                "Qtd_Sugerida_Compra",
-                "Valor_Compra_Estimado",
-                "Qtd_Excesso",
-                "Valor_Estoque_Custo",
-                "Valor_Excesso_Custo",
-                "Ultima_Venda_Str",
-                "Dias_Sem_Vender",
-                "Tem_Validade_CA",
-                "Dias_Para_Vencer_CA",
-                "Validade_CA_Str",
-                "Status_CA",
-            ],
+        return (
+            demanda_prox_mes,
+            projecao_cobertura,
+            meta_estoque,
+            teto_estoque,
+            cobertura_atual_meses,
+            status,
+            STATUS_CONFIG[status]["badge"],
+            STATUS_CONFIG[status]["ordem"],
+            qtd_sugerida_compra,
+            valor_compra_estimado,
+            qtd_excesso,
+            valor_estoque_custo,
+            valor_excesso_custo,
+            ult_venda.strftime("%d/%m/%Y") if ult_venda else "Sem registro",
+            dias_sem_vender if dias_sem_vender is not None else 999,
+            tem_validade_ca,
+            dias_para_vencer_ca,
+            validade_ca_str,
+            status_ca,
         )
 
-    planejamento_cols = df_base.apply(calcular_planejamento_linha, axis=1)
+    planejamento_cols = pd.DataFrame.from_records(
+        [calcular_planejamento_tupla(r) for r in df_base.to_dict("records")],
+        index=df_base.index,
+        columns=[
+            "Demanda_Prox_Mes",
+            "Projecao_Cobertura",
+            "Meta_Estoque",
+            "Teto_Estoque",
+            "Cobertura_Meses",
+            "Status",
+            "Badge_Class",
+            "Ordem_Status",
+            "Qtd_Sugerida_Compra",
+            "Valor_Compra_Estimado",
+            "Qtd_Excesso",
+            "Valor_Estoque_Custo",
+            "Valor_Excesso_Custo",
+            "Ultima_Venda_Str",
+            "Dias_Sem_Vender",
+            "Tem_Validade_CA",
+            "Dias_Para_Vencer_CA",
+            "Validade_CA_Str",
+            "Status_CA",
+        ],
+    )
     df_base = pd.concat([df_base, planejamento_cols], axis=1)
 
     # 5. KPIs Globais (antes dos filtros de tabela para manter visão executiva no topo)
@@ -578,103 +570,104 @@ def gerar_analise_estoque_e_compras(
 
     # 8. Gráficos Plotly (usando fig_to_html sem bdata binário)
     graficos = {}
-
-    # 8.1 Gráfico de Saúde do Estoque (Rosca)
-    df_status_chart = (
-        df_base[df_base["Status"] != "SEM ESTOQUE / INATIVO"]["Status"]
-        .value_counts()
-        .reset_index()
-    )
-    df_status_chart.columns = ["Status", "Quantidade"]
-    if not df_status_chart.empty:
-        mapa_cores = {k: v["cor"] for k, v in STATUS_CONFIG.items()}
-        fig_saude = px.pie(
-            df_status_chart,
-            names="Status",
-            values="Quantidade",
-            hole=0.45,
-            color="Status",
-            color_discrete_map=mapa_cores,
-            title="📊 Diagnóstico Geral da Saúde do Estoque (SKUs)",
-        )
-        fig_saude.update_traces(textposition="inside", textinfo="percent+value")
-        fig_saude.update_layout(height=360, margin=dict(t=45, b=20, l=20, r=20))
-        graficos["saude_estoque"] = fig_to_html(fig_saude)
-
-    # 8.2 Gráfico Top 12 Urgências de Compra (Qtd Sugerida)
-    df_top_compra = (
-        df_filtrado[df_filtrado["Qtd_Sugerida_Compra"] > 0]
-        .sort_values(["Ordem_Status", "Qtd_Sugerida_Compra"], ascending=[True, False])
-        .head(12)
-        .copy()
-    )
-    if not df_top_compra.empty:
-        df_top_compra["Label"] = (
-            df_top_compra["codigo_produto"].astype(str)
-            + " - "
-            + df_top_compra["nome"].astype(str).str.slice(0, 28)
-        )
-        fig_compra = px.bar(
-            df_top_compra,
-            x="Qtd_Sugerida_Compra",
-            y="Label",
-            orientation="h",
-            color="Status",
-            color_discrete_map={k: v["cor"] for k, v in STATUS_CONFIG.items()},
-            text="Qtd_Sugerida_Compra",
-            title=f"🛒 Top 12 Necessidades de Compra (Cobertura {cobertura_meses:g}M)",
-            labels={"Qtd_Sugerida_Compra": "Sugestão de Compra (un)", "Label": "Produto"},
-        )
-        fig_compra.update_layout(
-            height=360,
-            margin=dict(t=45, b=20, l=20, r=20),
-            yaxis=dict(categoryorder="total ascending"),
-            showlegend=True,
-        )
-        graficos["top_compras"] = fig_to_html(fig_compra)
-
-    # 8.3 Gráficos da Aba Ranking: Top 15 por Faturamento (R$) e Top 15 por Quantidade
     df_com_vendas = df_base[df_base["Qtd_Vendida"] > 0].copy()
-    if not df_com_vendas.empty:
-        top_fat = df_com_vendas.sort_values("Faturamento_Periodo", ascending=False).head(15).copy()
-        top_fat["Label"] = top_fat["codigo_produto"].astype(str) + " - " + top_fat["nome"].astype(str).str.slice(0, 30)
-        fig_rank_fat = px.bar(
-            top_fat,
-            x="Faturamento_Periodo",
-            y="Label",
-            orientation="h",
-            color="Curva_ABC",
-            color_discrete_map={"A": "#15803d", "B": "#0284c7", "C": "#64748b"},
-            text_auto=".2s",
-            title=f"💰 Top 15 Produtos Mais Vendidos por Faturamento ({dias_analise}d)",
-            labels={"Faturamento_Periodo": "Faturamento (R$)", "Label": "Produto"},
-        )
-        fig_rank_fat.update_layout(
-            height=420,
-            margin=dict(t=45, b=20, l=20, r=20),
-            yaxis=dict(categoryorder="total ascending"),
-        )
-        graficos["ranking_faturamento"] = fig_to_html(fig_rank_fat)
 
-        top_qtd = df_com_vendas.sort_values("Qtd_Vendida", ascending=False).head(15).copy()
-        top_qtd["Label"] = top_qtd["codigo_produto"].astype(str) + " - " + top_qtd["nome"].astype(str).str.slice(0, 30)
-        fig_rank_qtd = px.bar(
-            top_qtd,
-            x="Qtd_Vendida",
-            y="Label",
-            orientation="h",
-            color="Status",
-            color_discrete_map={k: v["cor"] for k, v in STATUS_CONFIG.items()},
-            text="Qtd_Vendida",
-            title=f"📦 Top 15 Produtos Mais Vendidos por Quantidade ({dias_analise}d)",
-            labels={"Qtd_Vendida": "Quantidade Vendida", "Label": "Produto"},
+    if gerar_graficos:
+        # 8.1 Gráfico de Saúde do Estoque (Rosca)
+        df_status_chart = (
+            df_base[df_base["Status"] != "SEM ESTOQUE / INATIVO"]["Status"]
+            .value_counts()
+            .reset_index()
         )
-        fig_rank_qtd.update_layout(
-            height=420,
-            margin=dict(t=45, b=20, l=20, r=20),
-            yaxis=dict(categoryorder="total ascending"),
+        df_status_chart.columns = ["Status", "Quantidade"]
+        if not df_status_chart.empty:
+            mapa_cores = {k: v["cor"] for k, v in STATUS_CONFIG.items()}
+            fig_saude = px.pie(
+                df_status_chart,
+                names="Status",
+                values="Quantidade",
+                hole=0.45,
+                color="Status",
+                color_discrete_map=mapa_cores,
+                title="📊 Diagnóstico Geral da Saúde do Estoque (SKUs)",
+            )
+            fig_saude.update_traces(textposition="inside", textinfo="percent+value")
+            fig_saude.update_layout(height=360, margin=dict(t=45, b=20, l=20, r=20))
+            graficos["saude_estoque"] = fig_to_html(fig_saude)
+
+        # 8.2 Gráfico Top 12 Urgências de Compra (Qtd Sugerida)
+        df_top_compra = (
+            df_filtrado[df_filtrado["Qtd_Sugerida_Compra"] > 0]
+            .sort_values(["Ordem_Status", "Qtd_Sugerida_Compra"], ascending=[True, False])
+            .head(12)
+            .copy()
         )
-        graficos["ranking_quantidade"] = fig_to_html(fig_rank_qtd)
+        if not df_top_compra.empty:
+            df_top_compra["Label"] = (
+                df_top_compra["codigo_produto"].astype(str)
+                + " - "
+                + df_top_compra["nome"].astype(str).str.slice(0, 28)
+            )
+            fig_compra = px.bar(
+                df_top_compra,
+                x="Qtd_Sugerida_Compra",
+                y="Label",
+                orientation="h",
+                color="Status",
+                color_discrete_map={k: v["cor"] for k, v in STATUS_CONFIG.items()},
+                text="Qtd_Sugerida_Compra",
+                title=f"🛒 Top 12 Necessidades de Compra (Cobertura {cobertura_meses:g}M)",
+                labels={"Qtd_Sugerida_Compra": "Sugestão de Compra (un)", "Label": "Produto"},
+            )
+            fig_compra.update_layout(
+                height=360,
+                margin=dict(t=45, b=20, l=20, r=20),
+                yaxis=dict(categoryorder="total ascending"),
+                showlegend=True,
+            )
+            graficos["top_compras"] = fig_to_html(fig_compra)
+
+        # 8.3 Gráficos da Aba Ranking: Top 15 por Faturamento (R$) e Top 15 por Quantidade
+        if not df_com_vendas.empty:
+            top_fat = df_com_vendas.sort_values("Faturamento_Periodo", ascending=False).head(15).copy()
+            top_fat["Label"] = top_fat["codigo_produto"].astype(str) + " - " + top_fat["nome"].astype(str).str.slice(0, 30)
+            fig_rank_fat = px.bar(
+                top_fat,
+                x="Faturamento_Periodo",
+                y="Label",
+                orientation="h",
+                color="Curva_ABC",
+                color_discrete_map={"A": "#15803d", "B": "#0284c7", "C": "#64748b"},
+                text_auto=".2s",
+                title=f"💰 Top 15 Produtos Mais Vendidos por Faturamento ({dias_analise}d)",
+                labels={"Faturamento_Periodo": "Faturamento (R$)", "Label": "Produto"},
+            )
+            fig_rank_fat.update_layout(
+                height=420,
+                margin=dict(t=45, b=20, l=20, r=20),
+                yaxis=dict(categoryorder="total ascending"),
+            )
+            graficos["ranking_faturamento"] = fig_to_html(fig_rank_fat)
+
+            top_qtd = df_com_vendas.sort_values("Qtd_Vendida", ascending=False).head(15).copy()
+            top_qtd["Label"] = top_qtd["codigo_produto"].astype(str) + " - " + top_qtd["nome"].astype(str).str.slice(0, 30)
+            fig_rank_qtd = px.bar(
+                top_qtd,
+                x="Qtd_Vendida",
+                y="Label",
+                orientation="h",
+                color="Status",
+                color_discrete_map={k: v["cor"] for k, v in STATUS_CONFIG.items()},
+                text="Qtd_Vendida",
+                title=f"📦 Top 15 Produtos Mais Vendidos por Quantidade ({dias_analise}d)",
+                labels={"Qtd_Vendida": "Quantidade Vendida", "Label": "Produto"},
+            )
+            fig_rank_qtd.update_layout(
+                height=420,
+                margin=dict(t=45, b=20, l=20, r=20),
+                yaxis=dict(categoryorder="total ascending"),
+            )
+            graficos["ranking_quantidade"] = fig_to_html(fig_rank_qtd)
 
     # 9. Tabelas Estruturadas
     # 9.1 Tabela de Compras e Alertas
@@ -697,38 +690,40 @@ def gerar_analise_estoque_e_compras(
     tabela_parados = df_parados_excesso.to_dict(orient="records")
 
     # 10. Visão: Produtos que cada Cliente compra x Situação do Estoque ao lado
-    clientes_raw = (
-        ItemVenda.objects.exclude(cliente_nome__in=["", "NAN", "NONE"])
-        .order_by()
-        .values_list("cliente_nome", flat=True)
-        .distinct()
-    )
-    clientes_map = {}
-    for nome_cli in clientes_raw:
-        if nome_cli:
-            nome_limpo = str(nome_cli).strip()
-            chave_upper = nome_limpo.upper()
-            if chave_upper and chave_upper not in ("NAN", "NONE") and chave_upper not in clientes_map:
-                clientes_map[chave_upper] = nome_limpo
-    clientes_disponiveis = sorted(clientes_map.values())
-
-    if not cliente_selecionado and clientes_disponiveis:
-        # Seleciona por padrão o cliente com maior volume no período para já exibir a aba preenchida
-        if not df_vendas.empty:
-            top_cli = (
-                df_vendas.groupby("cliente_nome")["valor_total"]
-                .sum()
-                .sort_values(ascending=False)
-                .index
-            )
-            cliente_selecionado = top_cli[0].strip() if len(top_cli) > 0 else clientes_disponiveis[0]
-        else:
-            cliente_selecionado = clientes_disponiveis[0]
-
+    clientes_disponiveis = []
     tabela_cliente_produtos = []
     resumo_cliente = {}
 
-    if cliente_selecionado:
+    if incluir_aba_cliente:
+        clientes_raw = (
+            ItemVenda.objects.exclude(cliente_nome__in=["", "NAN", "NONE"])
+            .order_by()
+            .values_list("cliente_nome", flat=True)
+            .distinct()
+        )
+        clientes_map = {}
+        for nome_cli in clientes_raw:
+            if nome_cli:
+                nome_limpo = str(nome_cli).strip()
+                chave_upper = nome_limpo.upper()
+                if chave_upper and chave_upper not in ("NAN", "NONE") and chave_upper not in clientes_map:
+                    clientes_map[chave_upper] = nome_limpo
+        clientes_disponiveis = sorted(clientes_map.values())
+
+        if not cliente_selecionado and clientes_disponiveis:
+            # Seleciona por padrão o cliente com maior volume no período para já exibir a aba preenchida
+            if not df_vendas.empty:
+                top_cli = (
+                    df_vendas.groupby("cliente_nome")["valor_total"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .index
+                )
+                cliente_selecionado = top_cli[0].strip() if len(top_cli) > 0 else clientes_disponiveis[0]
+            else:
+                cliente_selecionado = clientes_disponiveis[0]
+
+    if incluir_aba_cliente and cliente_selecionado:
         itens_cli_qs = ItemVenda.objects.filter(cliente_nome__iexact=cliente_selecionado.strip()).values(
             "codigo_produto",
             "descricao_produto",
