@@ -133,6 +133,12 @@
         </p>
     </div>
     <div class="d-flex flex-wrap gap-2">
+        {% if request.user.is_admin or request.user.is_compras or request.user.is_almoxarifado %}
+        <a href="{% url 'gestao_produtos' %}"
+           class="btn btn-primary btn-sm d-flex align-items-center gap-1 shadow-sm">
+            🏷️ Gerenciar Produtos & CA
+        </a>
+        {% endif %}
         <a href="{% url 'exportar_compras_csv' %}?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&marca={{ marca_selecionada }}&status={{ status_filtro }}&criticos={% if apenas_criticos %}1{% endif %}"
            class="btn btn-success btn-sm d-flex align-items-center gap-1 shadow-sm">
             📊 Exportar Plano de Compras (Excel)
@@ -368,6 +374,7 @@
                             <th class="sticky-col-2">Código (SKU)</th>
                             <th>Produto</th>
                             <th>Marca</th>
+                            <th class="text-center" title="Dias restantes até o vencimento do Certificado de Aprovação (CA)">Dias p/ vencer CA</th>
                             <th class="text-center">Giro / Demanda</th>
                             <th class="text-end">Vendas ({{ dias_analise }}d)</th>
                             <th class="text-end">Média / Mês</th>
@@ -410,6 +417,24 @@
                                 {% endif %}
                             </td>
                             <td class="text-nowrap"><small class="fw-semibold text-secondary">{{ r.marca }}</small></td>
+                            <td class="text-center text-nowrap"
+                                data-order="{% if r.Tem_Validade_CA %}{{ r.Dias_Para_Vencer_CA }}{% else %}999999{% endif %}"
+                                {% if r.Tem_Validade_CA %}title="CA {{ r.ca__numero_ca }} | Validade: {{ r.Validade_CA_Str }} ({{ r.Status_CA }})"{% endif %}>
+                                {% if r.Tem_Validade_CA %}
+                                    {% if r.Dias_Para_Vencer_CA < 0 %}
+                                        <span class="badge bg-danger">Vencido ({{ r.Dias_Para_Vencer_CA }}d)</span>
+                                    {% elif r.Dias_Para_Vencer_CA <= 90 %}
+                                        <span class="badge bg-warning text-dark">{{ r.Dias_Para_Vencer_CA }} dias</span>
+                                    {% else %}
+                                        <span class="badge bg-success-subtle text-success border">{{ r.Dias_Para_Vencer_CA }} dias</span>
+                                    {% endif %}
+                                    <br><small class="text-muted" style="font-size: 0.70rem;">{{ r.Validade_CA_Str }}</small>
+                                {% elif r.ca__numero_ca and r.ca__numero_ca != '-' %}
+                                    <span class="badge bg-secondary-subtle text-secondary border">Pendente</span>
+                                {% else %}
+                                    <span class="text-muted">-</span>
+                                {% endif %}
+                            </td>
                             <td class="text-center text-nowrap">
                                 {% if r.Padrao_Demanda == 'Recorrente' %}
                                     <span class="badge bg-success-subtle text-success border">Recorrente ({{ r.Num_Pedidos }} NF / {{ r.Num_Clientes }} cli)</span>

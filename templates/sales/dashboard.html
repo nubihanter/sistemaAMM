@@ -2,165 +2,319 @@
 
 {% block title %}Dashboard de Vendas - AMM{% endblock %}
 
+{% block extra_head %}
+<style>
+    .card-metric {
+        border-radius: 10px;
+        border: none;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+    .table-matrix-scroll {
+        max-height: 55vh;
+        overflow: auto;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        position: relative;
+        background-color: #ffffff;
+    }
+    #tabelaNotasMes {
+        border-collapse: separate !important;
+        border-spacing: 0;
+        margin-bottom: 0 !important;
+    }
+    #tabelaNotasMes thead th {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background-color: #1e293b !important;
+        color: #ffffff !important;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        vertical-align: middle;
+        white-space: nowrap;
+        border-bottom: 2px solid #0f172a !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+    }
+    #tabelaNotasMes tbody td {
+        font-size: 0.85rem;
+        vertical-align: middle;
+        background-color: #ffffff;
+    }
+    #tabelaNotasMes tbody tr:hover td {
+        background-color: #f1f5f9 !important;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <title>Dashboard de Vendas - AMM</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Script base do Plotly via CDN -->
-    <script charset="utf-8" src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
-    <style>
-        body { background-color: #f8fafc; }
-        .card-metric { border-radius: 10px; border: none; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-</head>
-<body class="p-4">
-<div class="container-fluid">
-    <!-- Cabeçalho -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div>
-            <h2 class="fw-bold text-primary mb-0">📊 Dashboard de Vendas</h2>
-            <small class="text-muted">Visão atual: <strong>{{ vendedora_selecionada }}</strong> | Usuário: {{ request.user.username }} ({{ request.user.get_role_display }})</small>
+<!-- Cabeçalho -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h2 class="fw-bold text-primary mb-0">📊 Dashboard Comercial & Acompanhamento de Metas</h2>
+        <small class="text-muted">
+            Visão atual: <strong>{{ vendedora_selecionada }}</strong> |
+            Período: <strong>{{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }}</strong>
+        </small>
+    </div>
+    <div>
+        <a href="{% url 'analise_clientes' %}{% if pode_selecionar and vendedora_selecionada != 'EMPRESA' %}?visao={{ vendedora_selecionada|urlencode }}{% endif %}"
+           class="btn btn-outline-primary btn-sm fw-semibold shadow-sm">
+            👥 Ver Carteira de Clientes
+        </a>
+    </div>
+</div>
+
+<!-- Barra de Filtros -->
+<div class="card card-kpi p-3 mb-4 bg-white">
+    <form method="get" class="row g-3 align-items-end">
+        {% if pode_selecionar %}
+        <div class="col-lg-5 col-md-6">
+            <label for="id_visao" class="form-label small fw-bold text-muted mb-1">👤 Selecionar Vendedor / Visão:</label>
+            <div class="input-group input-group-sm">
+                <span class="input-group-text bg-white">🏢</span>
+                <select id="id_visao" name="visao" class="form-select" onchange="this.form.submit()">
+                    <option value="EMPRESA" {% if vendedora_selecionada == 'EMPRESA' %}selected{% endif %}>
+                        EMPRESA (Visão Geral Consolidada)
+                    </option>
+                    <optgroup label="Vendedores Ativos">
+                        {% for vend in vendedores_disponiveis %}
+                            <option value="{{ vend }}" {% if vendedora_selecionada == vend %}selected{% endif %}>
+                                {{ vend }}
+                            </option>
+                        {% empty %}
+                            <option value="" disabled>Nenhum vendedor encontrado</option>
+                        {% endfor %}
+                    </optgroup>
+                </select>
+            </div>
         </div>
-        <form method="post" action="{% url 'logout' %}">
-            {% csrf_token %}
-            <button class="btn btn-outline-danger btn-sm" type="submit">Sair</button>
-        </form>
+        {% else %}
+        <div class="col-lg-5 col-md-6">
+            <label class="form-label small fw-bold text-muted mb-1">👤 Sua Carteira Individual:</label>
+            <input type="text" class="form-control form-control-sm bg-light fw-bold" value="{{ vendedora_selecionada }}" readonly>
+        </div>
+        {% endif %}
+
+        <div class="col-lg-3 col-md-3 col-6">
+            <label for="id_mes" class="form-label small fw-bold text-muted mb-1">📅 Mês:</label>
+            <select id="id_mes" name="mes" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for num, nome in meses %}
+                <option value="{{ num }}" {% if mes_selecionado == num %}selected{% endif %}>
+                    {{ num|stringformat:"02d" }} - {{ nome }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-2 col-md-3 col-6">
+            <label for="id_ano" class="form-label small fw-bold text-muted mb-1">📆 Ano:</label>
+            <select id="id_ano" name="ano" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for a in anos %}
+                <option value="{{ a }}" {% if ano_selecionado == a %}selected{% endif %}>
+                    {{ a }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-2 col-md-12">
+            <button type="submit" class="btn btn-primary btn-sm w-100 fw-semibold">Filtrar</button>
+        </div>
+    </form>
+</div>
+
+<!-- Linha de KPIs Executivos -->
+<div class="row g-3 mb-4">
+    <!-- 1. Total Vendas + Comparativos MoM / YoY -->
+    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-2{% else %}col-xl-3{% endif %} col-md-4 col-6">
+        <div class="card card-metric p-3 bg-white border-start border-success border-4 h-100">
+            <span class="text-muted small fw-bold">💰 Faturamento Realizado</span>
+            <h4 class="fw-bold text-success mb-1 mt-1">{{ metricas.total_vendas }}</h4>
+            <div class="d-flex flex-wrap gap-1 mt-auto">
+                <span class="badge {% if metricas.mom_positivo %}bg-success-subtle text-success{% else %}bg-danger-subtle text-danger{% endif %} border" style="font-size: 0.70rem;">
+                    {{ metricas.mom_delta_str }}
+                </span>
+                <span class="badge {% if metricas.yoy_positivo %}bg-primary-subtle text-primary{% else %}bg-warning-subtle text-dark{% endif %} border" style="font-size: 0.70rem;">
+                    {{ metricas.yoy_delta_str }}
+                </span>
+            </div>
+        </div>
     </div>
 
-    <!-- Barra de Filtros -->
-    <!-- Barra de Filtros com Seletor de Vendedores Únicos -->
-    <div class="card p-3 mb-4 shadow-sm">
-        <form method="get" class="row g-3 align-items-center">
-            
-            {% if pode_selecionar %}
-            <div class="col-md-5">
-                <label for="id_visao" class="form-label fw-bold">Selecionar Vendedor / Visão:</label>
-                <div class="input-group">
-                    <span class="input-group-text">👤</span>
-                    <select id="id_visao" name="visao" class="form-select" onchange="this.form.submit()">
-                        <option value="EMPRESA" {% if vendedora_selecionada == 'EMPRESA' %}selected{% endif %}>
-                            🏢 EMPRESA (Visão Geral)
-                        </option>
-                        
-                        <optgroup label="Vendedores Cadastrados">
-                            {% for vend in vendedores_disponiveis %}
-                                <option value="{{ vend }}" {% if vendedora_selecionada == vend %}selected{% endif %}>
-                                    {{ vend }}
-                                </option>
-                            {% empty %}
-                                <option value="" disabled>Nenhum vendedor encontrado</option>
-                            {% endfor %}
-                        </optgroup>
-                    </select>
+    <!-- 2. Meta do Período & Status do Ritmo -->
+    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-3{% else %}col-xl-3{% endif %} col-md-4 col-6">
+        <div class="card card-metric p-3 bg-white border-start border-primary border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">🎯 Meta do Mês</span>
+                <span class="{{ metricas.status_class }}" style="font-size: 0.70rem;">{{ metricas.status_meta }}</span>
+            </div>
+            <h4 class="fw-bold text-primary mb-1 mt-1">{{ metricas.meta_total }} <small class="fs-6 text-dark">({{ metricas.percentual_meta }})</small></h4>
+            <small class="text-muted" style="font-size: 0.75rem;">{{ metricas.dias_info }}</small>
+        </div>
+    </div>
+
+    <!-- 3. Projeção de Fechamento do Mês -->
+    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-2{% else %}col-xl-2{% endif %} col-md-4 col-6">
+        <div class="card card-metric p-3 bg-white border-start border-info border-4 h-100">
+            <span class="text-muted small fw-bold">🔮 Projeção Fechamento</span>
+            <h4 class="fw-bold text-info-emphasis mb-1 mt-1">{{ metricas.projecao_fechamento }}</h4>
+            <small class="text-muted">
+                {% if metricas.mes_encerrado %}
+                    Mês encerrado ({{ metricas.projecao_pct_meta }} da meta)
+                {% else %}
+                    Ritmo p/ <strong>{{ metricas.projecao_pct_meta }}</strong> da meta
+                {% endif %}
+            </small>
+        </div>
+    </div>
+
+    <!-- 4. Nº de Vendas e Clientes Atendidos -->
+    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-2{% else %}col-xl-2{% endif %} col-md-6 col-6">
+        <div class="card card-metric p-3 bg-white border-start border-secondary border-4 h-100">
+            <span class="text-muted small fw-bold">🧾 Volume & Clientes</span>
+            <h4 class="fw-bold text-dark mb-1 mt-1">{{ metricas.num_vendas }} <small class="fs-6 fw-normal text-muted">NFs</small></h4>
+            <small class="text-muted"><strong>{{ metricas.num_clientes }}</strong> clientes atendidos no mês</small>
+        </div>
+    </div>
+
+    <!-- 5. Ticket Médio -->
+    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-1{% else %}col-xl-2{% endif %} col-md-6 col-6">
+        <div class="card card-metric p-3 bg-white border-start border-dark border-4 h-100">
+            <span class="text-muted small fw-bold">🏷️ Ticket Médio</span>
+            <h5 class="fw-bold text-dark mb-1 mt-1">{{ metricas.ticket_medio }}</h5>
+            <small class="text-muted">Por NF emitida</small>
+        </div>
+    </div>
+
+    <!-- 6. Margem Bruta Estimada (Exclusivo Admin) -->
+    {% if pode_ver_margem and metricas.tem_margem %}
+    <div class="col-xl-2 col-md-6 col-6">
+        <div class="card card-metric p-3 bg-white border-start border-warning border-4 h-100"
+             title="Calculado a partir dos itens faturados no período vs custo unitário de referência (Visível apenas para Administrador)">
+            <span class="text-muted small fw-bold">📈 Lucro Bruto Est.</span>
+            <h5 class="fw-bold text-success mb-1 mt-1">{{ metricas.margem_bruta_valor }}</h5>
+            <small class="text-muted">Margem: <strong>{{ metricas.margem_bruta_pct }}</strong></small>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Linha 1 de Gráficos: Evolução Acumulada vs Ritmo e Histórico de Metas -->
+<div class="row g-3 mb-4">
+    <div class="col-lg-6">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_evolucao %}
+                {{ grafico_evolucao|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Nenhuma venda registrada para o período selecionado.</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_historico_metas %}
+                {{ grafico_historico_metas|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem histórico de metas para a visão selecionada.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Linha 2 de Gráficos: Ranking de Vendedores (% da Meta) e Top 10 Clientes do Mês -->
+<div class="row g-3 mb-4">
+    <div class="col-lg-7">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_ranking %}
+                {{ grafico_ranking|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem dados de ranking no período.</div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_top_clientes %}
+                {{ grafico_top_clientes|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem clientes faturados no período.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Linha 3: Nº de Notas por Dia + Tabela de Notas Fiscais Emitidas no Período -->
+<div class="row g-3 mb-5">
+    <div class="col-lg-4">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_qtd %}
+                {{ grafico_qtd|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem emissões diárias no período.</div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card card-kpi p-4 bg-white h-100">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                    <h5 class="fw-bold mb-0">🧾 Notas Fiscais Emitidas no Período ({{ tabela_notas|length }})</h5>
+                    <small class="text-muted">Clique no nome do cliente para consultar os produtos comprados vs. estoque.</small>
                 </div>
             </div>
-            {% else %}
-            <!-- Caso seja perfil Vendedor, exibe apenas a identificação fixa sem permissão de troca -->
-            <div class="col-md-5">
-                <label class="form-label fw-bold">Sua Visão:</label>
-                <input type="text" class="form-control bg-light" value="{{ vendedora_selecionada }}" readonly>
-            </div>
-            {% endif %}
-
-            <!-- Seletor de Mês -->
-            <div class="col-md-3">
-                <label for="id_mes" class="form-label fw-bold">Mês:</label>
-                <select id="id_mes" name="mes" class="form-select" onchange="this.form.submit()">
-                    {% for num, nome in meses %}
-                    <option value="{{ num }}" {% if mes_selecionado == num %}selected{% endif %}>
-                        {{ num|stringformat:"02d" }} - {{ nome }}
-                    </option>
-                    {% endfor %}
-                </select>
-            </div>
-
-            <!-- Seletor de Ano -->
-            <div class="col-md-2">
-                <label for="id_ano" class="form-label fw-bold">Ano:</label>
-                <select id="id_ano" name="ano" class="form-select" onchange="this.form.submit()">
-                    {% for a in anos %}
-                    <option value="{{ a }}" {% if ano_selecionado == a %}selected{% endif %}>
-                        {{ a }}
-                    </option>
-                    {% endfor %}
-                </select>
-            </div>
-
-            <!-- Botão de submissão explícita caso o usuário desative JS -->
-            <div class="col-md-2 d-flex align-items-end">
-                <button type="submit" class="btn btn-primary w-100">Filtrar</button>
-            </div>
-
-        </form>
-    </div>
-
-    <!-- Linha de Métricas -->
-    <div class="row g-3 mb-4">
-        <div class="col-md-3">
-            <div class="card card-metric p-3 bg-white">
-                <span class="text-muted">Total Vendas</span>
-                <h3 class="fw-bold text-success">{{ metricas.total_vendas }}</h3>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card card-metric p-3 bg-white">
-                <span class="text-muted">Meta do Período</span>
-                <h3 class="fw-bold text-primary">{{ metricas.meta_total }}</h3>
-                <small class="fw-bold">{{ metricas.percentual_meta }} ({{ metricas.status_meta }})</small>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card card-metric p-3 bg-white">
-                <span class="text-muted">Nº de Vendas</span>
-                <h3 class="fw-bold text-info">{{ metricas.num_vendas }}</h3>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card card-metric p-3 bg-white">
-                <span class="text-muted">Ticket Médio</span>
-                <h3 class="fw-bold text-dark">{{ metricas.ticket_medio }}</h3>
-            </div>
-        </div>
-    </div>
-
-    <!-- Gráficos -->
-    <div class="row g-3 mb-4">
-        <!-- Coluna 1: Evolução Acumulada -->
-        <div class="col-lg-6">
-            <div class="card card-kpi p-3 bg-white h-100">
-                {{ grafico_evolucao|safe }}
-            </div>
-        </div>
-
-        <!-- Coluna 2: Últimas Metas vs Realizado -->
-        <div class="col-lg-6">
-            <div class="card card-kpi p-3 bg-white h-100">
-                {% if grafico_historico_metas %}
-                    {{ grafico_historico_metas|safe }}
-                {% else %}
-                    <div class="text-center p-5 text-muted">Sem histórico de metas para o vendedor selecionado.</div>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <!-- Linha do Ranking e Quantidade de Vendas -->
-    <div class="row g-3 mb-4">
-        <div class="col-lg-8">
-            <div class="card card-kpi p-3 bg-white h-100">
-                {{ grafico_ranking|safe }}
-            </div>
-        </div>
-        <div class="col-lg-4">
-            <div class="card card-kpi p-3 bg-white h-100">
-                {{ grafico_qtd|safe }}
+            <div>
+                <table id="tabelaNotasMes" class="table table-hover align-middle w-100">
+                    <thead>
+                        <tr>
+                            <th>Nº Nota</th>
+                            <th>Data Emissão</th>
+                            <th>Cliente (Consolidado por CNPJ)</th>
+                            <th>Vendedor</th>
+                            <th class="text-end">Valor Total (R$)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for nf in tabela_notas %}
+                        <tr>
+                            <td class="fw-bold text-nowrap">{{ nf.numero_nota }}</td>
+                            <td class="text-nowrap" data-order="{{ nf.data_iso }}">{{ nf.data_str }}</td>
+                            <td>
+                                <a href="{% url 'dashboard_estoque' %}?aba=clientes&cliente={{ nf.cliente_nome|urlencode }}"
+                                   class="text-decoration-none text-dark fw-semibold"
+                                   title="Ver mix de produtos deste cliente no estoque">
+                                    {{ nf.cliente_nome }}
+                                </a>
+                            </td>
+                            <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ nf.vendedor_nome }}</span></td>
+                            <td class="text-end fw-bold text-success text-nowrap" data-order="{{ nf.valor_total|stringformat:'.2f' }}">
+                                R$ {{ nf.valor_total|floatformat:2 }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
 </div>
-</body>
-</html>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    $(document).ready(function() {
+        $('#tabelaNotasMes').DataTable({
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json'
+            },
+            dom: "<'row mb-2 align-items-center'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                 "<'table-matrix-scroll'tr>" +
+                 "<'row mt-3 align-items-center'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+            pageLength: 10,
+            lengthMenu: [[10, 25, 50, 100], [10, 25, 50, 100]],
+            order: []
+        });
+    });
+</script>
 {% endblock %}

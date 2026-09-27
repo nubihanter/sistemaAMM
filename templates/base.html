@@ -63,6 +63,13 @@
                             📦 Estoque & Compras
                         </a>
                     </li>
+                    {% if request.user.is_admin or request.user.is_compras or request.user.is_almoxarifado %}
+                    <li class="nav-item">
+                        <a class="nav-link px-3 {% if request.resolver_match.url_name == 'gestao_produtos' %}active{% endif %}" href="{% url 'gestao_produtos' %}">
+                            🏷️ Produtos & CA
+                        </a>
+                    </li>
+                    {% endif %}
                 </ul>
                 <div class="d-flex align-items-center gap-3">
                     <span class="text-muted small">👤 {{ request.user.username }} <span class="badge bg-light text-secondary border">{{ request.user.get_role_display }}</span></span>

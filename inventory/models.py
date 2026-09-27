@@ -31,7 +31,7 @@ class CertificadoAprovacao(models.Model):
         db_index=True, 
         verbose_name="Número do CA"
     )
-    data_validade = models.DateField(verbose_name="Data de Validade")
+    data_validade = models.DateField(blank=True, null=True, verbose_name="Data de Validade")
     status = models.CharField(
         max_length=20, 
         choices=STATUS_CA_CHOICES, 
@@ -77,10 +77,10 @@ class CertificadoAprovacao(models.Model):
         return self.data_validade < timezone.now().date()
 
     @property
-    def dias_para_vencer(self) -> int:
-        """Retorna a contagem de dias restantes até o vencimento."""
+    def dias_para_vencer(self):
+        """Retorna a contagem de dias restantes até o vencimento (ou None se sem data)."""
         if not self.data_validade:
-            return 0
+            return None
         delta = self.data_validade - timezone.now().date()
         return delta.days
 
@@ -106,6 +106,13 @@ class ProdutoEPI(models.Model):
         on_delete=models.PROTECT, 
         related_name="produtos", 
         verbose_name="Categoria"
+    )
+    subcategoria = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        db_index=True,
+        verbose_name="Subcategoria"
     )
     ca = models.ForeignKey(
         CertificadoAprovacao, 
@@ -140,6 +147,7 @@ class ProdutoEPI(models.Model):
     estoque_maximo = models.PositiveIntegerField(default=0, verbose_name="Estoque Máximo (0 = Automático)")
     item_critico = models.BooleanField(default=False, db_index=True, verbose_name="Item Crítico (Não Pode Faltar)")
     nao_comprar_erp = models.BooleanField(default=False, verbose_name="Bloqueado p/ Compra (ERP)")
+    editado_manualmente = models.BooleanField(default=False, verbose_name="Cadastro Editado Manualmente")
     
     data_ultima_entrada = models.DateField(blank=True, null=True, verbose_name="Última Entrada (ERP)")
     data_ultima_saida = models.DateField(blank=True, null=True, verbose_name="Última Venda (ERP)")

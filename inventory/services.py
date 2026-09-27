@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 from decimal import Decimal
 import pandas as pd
@@ -6,6 +7,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from integrations.ca_epi import ConsultaCAClient
 from integrations.hardness import HardnessAPI
 from sales.models import NotaFiscal
 from .models import Categoria, CertificadoAprovacao, ProdutoEPI, ItemVenda
@@ -158,11 +160,11 @@ def sincronizar_estoque_hardness():
                     ca_obj, _ = CertificadoAprovacao.objects.get_or_create(
                         numero_ca=num_ca,
                         defaults={
-                            "data_validade": hoje + timedelta(days=365),
+                            "data_validade": None,
                             "status": "VALIDO",
                             "fabricante": marca if marca != "N/A" else "NÃO INFORMADO",
                             "descricao_equipamento": nome,
-                            "ultima_consulta_api": timezone.now(),
+                            "ultima_consulta_api": None,
                         }
                     )
                     cas_cache[num_ca] = ca_obj
@@ -202,13 +204,14 @@ def sincronizar_estoque_hardness():
 
             prod_existente = produtos_existentes.get(sku)
             if prod_existente:
-                prod_existente.nome = nome
-                prod_existente.marca = marca
-                prod_existente.categoria = categoria_obj
-                if ca_obj and not prod_existente.ca_id:
-                    prod_existente.ca = ca_obj
-                if tamanho_var and not prod_existente.tamanho_variacao:
-                    prod_existente.tamanho_variacao = tamanho_var
+                if not prod_existente.editado_manualmente:
+                    prod_existente.nome = nome
+                    prod_existente.marca = marca
+                    prod_existente.categoria = categoria_obj
+                    if ca_obj and not prod_existente.ca_id:
+                        prod_existente.ca = ca_obj
+                    if tamanho_var and not prod_existente.tamanho_variacao:
+                        prod_existente.tamanho_variacao = tamanho_var
                 prod_existente.unidade_medida = unidade
                 if preco_custo > 0:
                     prod_existente.preco_custo = preco_custo
@@ -416,9 +419,106 @@ def sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=180):
         data_inicio=data_inicio_str,
         data_fim=data_fim_str,
     )
+
+    # Consulta automática apenas dos CAs recém-importados que ainda não têm data_validade
+    res_ca = sincronizar_vencimentos_ca(forcar_todos=False)
+
     return {
         "estoque_criados": est_criados,
         "estoque_atualizados": est_atualizados,
         "itens_criados": itens_criados,
         "itens_atualizados": itens_atualizados,
+        "ca_atualizados": res_ca.get("atualizados", 0),
     }
+
+
+def sincronizar_vencimentos_ca(
+    forcar_todos: bool = False,
+    numero_ca_especifico: str = None,
+    max_workers: int = 6,
+) -> dict:
+    """
+    Consulta e atualiza as datas de vencimento e status dos CAs cadastrados no model CertificadoAprovacao.
+    - Por padrão (forcar_todos=False), consulta SOMENTE os CAs que ainda não possuem data_validade cadastrada.
+    - Quando forcar_todos=True, força a atualização geral de todos os CAs do banco.
+    - Quando numero_ca_especifico é informado, consulta/atualiza apenas aquele CA específico.
+    """
+    if numero_ca_especifico:
+        ca_limpo = ConsultaCAClient.limpar_numero_ca(numero_ca_especifico)
+        ca_obj, _ = CertificadoAprovacao.objects.get_or_create(
+            numero_ca=ca_limpo,
+            defaults={
+                "data_validade": None,
+                "status": "VALIDO",
+                "fabricante": "NÃO INFORMADO",
+            },
+        )
+        cas_alvo = [ca_obj]
+    elif forcar_todos:
+        cas_alvo = list(CertificadoAprovacao.objects.all().order_by("numero_ca"))
+    else:
+        cas_alvo = list(
+            CertificadoAprovacao.objects.filter(data_validade__isnull=True).order_by("numero_ca")
+        )
+
+    total = len(cas_alvo)
+    if total == 0:
+        print("ℹ️ Nenhum CA pendente de consulta de vencimento.")
+        return {"total": 0, "atualizados": 0, "vencidos": 0, "nao_encontrados": 0}
+
+    modo_str = "ATUALIZAÇÃO GERAL (FORÇADA)" if forcar_todos else "APENAS SEM VENCIMENTO CADASTRADO"
+    if numero_ca_especifico:
+        modo_str = f"CA ESPECÍFICO ({numero_ca_especifico})"
+    print(f"🔎 Consultando vencimento de {total} CA(s) [{modo_str}]...")
+
+    atualizados = 0
+    vencidos = 0
+    nao_encontrados = 0
+    agora = timezone.now()
+
+    def _consultar_um(ca_item):
+        client = ConsultaCAClient(timeout=15)
+        return ca_item, client.consultar_ca(ca_item.numero_ca)
+
+    resultados = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futuros = {executor.submit(_consultar_um, ca_obj): ca_obj for ca_obj in cas_alvo}
+        for idx, future in enumerate(as_completed(futuros), start=1):
+            ca_obj, dados = future.result()
+            resultados.append((ca_obj, dados))
+            if idx % 25 == 0 or idx == total:
+                print(f"   ⏳ Progresso CA: {idx}/{total} consultados...")
+
+    with transaction.atomic():
+        for ca_obj, dados in resultados:
+            ca_obj.ultima_consulta_api = agora
+            if dados.get("encontrado"):
+                if dados.get("data_validade"):
+                    ca_obj.data_validade = dados["data_validade"]
+                if dados.get("status"):
+                    ca_obj.status = dados["status"]
+                if dados.get("fabricante"):
+                    ca_obj.fabricante = dados["fabricante"][:255]
+                if dados.get("descricao_equipamento"):
+                    ca_obj.descricao_equipamento = dados["descricao_equipamento"]
+
+                ca_obj.save()
+                atualizados += 1
+                if ca_obj.status == "VENCIDO" or ca_obj.esta_vencido:
+                    vencidos += 1
+            else:
+                # Marca que a consulta foi tentada para auditoria
+                ca_obj.save(update_fields=["ultima_consulta_api"])
+                nao_encontrados += 1
+
+    print(
+        f"✅ Consulta de CA concluída: {atualizados} atualizados "
+        f"({vencidos} vencidos) | {nao_encontrados} não encontrados na base MTE."
+    )
+    return {
+        "total": total,
+        "atualizados": atualizados,
+        "vencidos": vencidos,
+        "nao_encontrados": nao_encontrados,
+    }
+

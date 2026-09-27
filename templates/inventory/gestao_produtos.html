@@ -1,0 +1,591 @@
+{% extends "base.html" %}
+
+{% block title %}Produtos & CA - AMM{% endblock %}
+
+{% block extra_head %}
+<style>
+    .kpi-clickable {
+        cursor: pointer;
+        text-decoration: none;
+        color: inherit;
+        display: block;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .kpi-clickable:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.10);
+    }
+    .table-matrix-scroll {
+        max-height: 68vh;
+        overflow: auto;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        position: relative;
+        background-color: #ffffff;
+    }
+    #tabelaGestaoProdutos {
+        border-collapse: separate !important;
+        border-spacing: 0;
+        margin-bottom: 0 !important;
+    }
+    #tabelaGestaoProdutos thead th {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background-color: #1e293b !important;
+        color: #ffffff !important;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        vertical-align: middle;
+        white-space: nowrap;
+        border-bottom: 2px solid #0f172a !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+    }
+    #tabelaGestaoProdutos tbody td {
+        font-size: 0.85rem;
+        vertical-align: middle;
+        background-color: #ffffff;
+    }
+    #tabelaGestaoProdutos tbody tr:hover td {
+        background-color: #f1f5f9 !important;
+    }
+    #tabelaGestaoProdutos th.sticky-col-sku,
+    #tabelaGestaoProdutos td.sticky-col-sku {
+        position: sticky;
+        left: 0;
+        z-index: 10;
+        border-right: 2px solid #cbd5e1 !important;
+    }
+    #tabelaGestaoProdutos thead th.sticky-col-sku {
+        z-index: 30;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h2 class="fw-bold mb-0">🏷️ Cadastro de Produtos, Categorias e CAs</h2>
+        <p class="text-muted mb-0">
+            Gerencie <strong>Estoque Mínimo</strong>, <strong>Estoque Máximo</strong>, <strong>Categoria</strong>, <strong>Subcategoria</strong>, <strong>Tamanho</strong>, <strong>Marca</strong> e <strong>CA</strong> (com consulta automática de validade no MTE).
+        </p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <button type="button" class="btn btn-outline-primary btn-sm fw-semibold shadow-sm"
+                data-bs-toggle="modal" data-bs-target="#modalCadastroCA">
+            🛡️ Cadastrar / Consultar CA
+        </button>
+        <button type="button" class="btn btn-primary btn-sm fw-semibold shadow-sm"
+                onclick="abrirModalNovoProduto()">
+            ➕ Novo Produto
+        </button>
+        <a href="{% url 'dashboard_estoque' %}" class="btn btn-outline-secondary btn-sm fw-semibold shadow-sm">
+            📦 Voltar ao Estoque
+        </a>
+    </div>
+</div>
+
+<!-- Cards de Resumo Rápido (Clicáveis para filtrar) -->
+<div class="row g-3 mb-4">
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?filtro_ca=TODOS" class="card card-kpi kpi-clickable p-3 bg-white border-start border-primary border-4 h-100">
+            <span class="text-muted small fw-bold">📦 Total de Produtos</span>
+            <h3 class="fw-bold text-primary mb-0 mt-1">{{ kpis.total_produtos }}</h3>
+            <small class="text-muted">SKUs cadastrados</small>
+        </a>
+    </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?filtro_ca=COM_CA" class="card card-kpi kpi-clickable p-3 bg-white border-start border-success border-4 h-100">
+            <span class="text-muted small fw-bold">🛡️ Com CA Vinculado</span>
+            <h3 class="fw-bold text-success mb-0 mt-1">{{ kpis.qtd_com_ca }}</h3>
+            <small class="text-muted">Produtos com CA</small>
+        </a>
+    </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?filtro_ca=CA_VENCIDO" class="card card-kpi kpi-clickable p-3 bg-white border-start border-danger border-4 h-100">
+            <span class="text-muted small fw-bold">🔴 CAs Vencidos</span>
+            <h3 class="fw-bold text-danger mb-0 mt-1">{{ kpis.qtd_ca_vencido }}</h3>
+            <small class="text-muted">Revisar / Corrigir CA</small>
+        </a>
+    </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?filtro_ca=CA_A_VENCER" class="card card-kpi kpi-clickable p-3 bg-white border-start border-warning border-4 h-100">
+            <span class="text-muted small fw-bold">🟡 CA a Vencer (≤ 90d)</span>
+            <h3 class="fw-bold text-warning mb-0 mt-1">{{ kpis.qtd_ca_a_vencer }}</h3>
+            <small class="text-muted">Atenção na renovação</small>
+        </a>
+    </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?filtro_ca=SEM_CA" class="card card-kpi kpi-clickable p-3 bg-white border-start border-secondary border-4 h-100">
+            <span class="text-muted small fw-bold">⚪ Sem CA Vinculado</span>
+            <h3 class="fw-bold text-secondary mb-0 mt-1">{{ kpis.qtd_sem_ca }}</h3>
+            <small class="text-muted">Itens sem CA informado</small>
+        </a>
+    </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?filtro_ca=EDITADOS" class="card card-kpi kpi-clickable p-3 bg-white border-start border-info border-4 h-100">
+            <span class="text-muted small fw-bold">⭐ Com Mínimo / Crítico</span>
+            <h3 class="fw-bold text-info mb-0 mt-1">{{ kpis.qtd_minimo_config }}</h3>
+            <small class="text-muted">Parâmetros definidos</small>
+        </a>
+    </div>
+</div>
+
+<!-- Barra de Filtros -->
+<form method="get" class="card card-kpi p-3 mb-4 bg-white">
+    <div class="row g-2 align-items-end">
+        <div class="col-lg-3 col-md-6">
+            <label class="form-label small fw-bold text-muted mb-1">🔎 Buscar Produto / SKU / CA:</label>
+            <input type="text" name="q" value="{{ busca }}" class="form-control form-control-sm"
+                   placeholder="Ex: 46381, Luva, Botina, SKU...">
+        </div>
+        <div class="col-lg-2 col-md-6">
+            <label class="form-label small fw-bold text-muted mb-1">📂 Categoria:</label>
+            <select name="categoria" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODAS">Todas ({{ categorias_disponiveis|length }})</option>
+                {% for cat in categorias_disponiveis %}
+                    <option value="{{ cat }}" {% if cat == categoria_filtro %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-lg-2 col-md-4">
+            <label class="form-label small fw-bold text-muted mb-1">📑 Subcategoria:</label>
+            <select name="subcategoria" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODAS">Todas ({{ subcategorias_disponiveis|length }})</option>
+                {% for sub in subcategorias_disponiveis %}
+                    <option value="{{ sub }}" {% if sub == subcategoria_filtro %}selected{% endif %}>{{ sub }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-lg-2 col-md-4">
+            <label class="form-label small fw-bold text-muted mb-1">🏷️ Marca:</label>
+            <select name="marca" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODAS">Todas ({{ marcas_disponiveis|length }})</option>
+                {% for m in marcas_disponiveis %}
+                    <option value="{{ m }}" {% if m == marca_filtro %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-lg-2 col-md-4">
+            <label class="form-label small fw-bold text-muted mb-1">🛡️ Situação do CA:</label>
+            <select name="filtro_ca" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODOS" {% if filtro_ca == 'TODOS' %}selected{% endif %}>Todos</option>
+                <option value="COM_CA" {% if filtro_ca == 'COM_CA' %}selected{% endif %}>Com CA Cadastrado</option>
+                <option value="SEM_CA" {% if filtro_ca == 'SEM_CA' %}selected{% endif %}>Sem CA Cadastrado</option>
+                <option value="CA_VENCIDO" {% if filtro_ca == 'CA_VENCIDO' %}selected{% endif %}>🔴 CA Vencido</option>
+                <option value="CA_A_VENCER" {% if filtro_ca == 'CA_A_VENCER' %}selected{% endif %}>🟡 CA a Vencer (≤ 90d)</option>
+                <option value="CA_VALIDO" {% if filtro_ca == 'CA_VALIDO' %}selected{% endif %}>🟢 CA Válido (> 90d)</option>
+                <option value="EDITADOS" {% if filtro_ca == 'EDITADOS' %}selected{% endif %}>✏️ Editados Manualmente</option>
+            </select>
+        </div>
+        <div class="col-lg-1 col-md-12 d-flex gap-1">
+            <button type="submit" class="btn btn-primary btn-sm w-100 fw-semibold">Filtrar</button>
+            <a href="{% url 'gestao_produtos' %}" class="btn btn-outline-secondary btn-sm" title="Limpar Filtros">✖</a>
+        </div>
+    </div>
+</form>
+
+<!-- Tabela Principal de Produtos -->
+<div class="card card-kpi bg-white p-4 mb-5">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div>
+            <h5 class="fw-bold mb-0">📋 Catálogo de Produtos ({{ produtos|length }} exibidos)</h5>
+            <small class="text-muted">
+                Clique em <strong>✏️ Editar</strong> em qualquer linha para alterar <strong>CA, Categoria, Subcategoria, Tamanho, Marca, Estoque Mínimo ou Estoque Máximo</strong>. Ao alterar o CA, a validade é atualizada automaticamente.
+            </small>
+        </div>
+    </div>
+
+    <div>
+        <table id="tabelaGestaoProdutos" class="table table-hover align-middle w-100">
+            <thead>
+                <tr>
+                    <th class="sticky-col-sku">Código (SKU)</th>
+                    <th>Produto</th>
+                    <th>Marca</th>
+                    <th>Categoria</th>
+                    <th>Subcategoria</th>
+                    <th class="text-center">Tamanho</th>
+                    <th class="text-center">Nº CA</th>
+                    <th class="text-center">Dias p/ vencer CA</th>
+                    <th class="text-end">Estoque Atual</th>
+                    <th class="text-center">Est. Mínimo</th>
+                    <th class="text-center">Est. Máximo</th>
+                    <th class="text-center">Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in produtos %}
+                <tr>
+                    <td class="fw-bold text-nowrap sticky-col-sku">
+                        {{ p.sku }}
+                        {% if p.item_critico %}
+                            <span title="Item Crítico (Não pode faltar)">⭐</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="fw-semibold">{{ p.nome }}</span>
+                        {% if p.editado_manualmente %}
+                            <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle ms-1" title="Dados revisados manualmente (protegidos contra sobrescrita do ERP)">Revisado</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-nowrap"><small class="fw-semibold text-secondary">{{ p.marca|default:"N/A" }}</small></td>
+                    <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ p.categoria.nome }}</span></td>
+                    <td class="text-nowrap">
+                        {% if p.subcategoria %}
+                            <span class="badge bg-secondary-subtle text-secondary border">{{ p.subcategoria }}</span>
+                        {% else %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-center text-nowrap">
+                        {% if p.tamanho_variacao %}
+                            <span class="badge bg-light text-dark border">{{ p.tamanho_variacao }}</span>
+                        {% else %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-center text-nowrap" data-order="{% if p.ca %}{{ p.ca.numero_ca }}{% else %}0{% endif %}">
+                        {% if p.ca %}
+                            <span class="badge bg-dark">CA {{ p.ca.numero_ca }}</span>
+                            <button type="button" class="btn btn-link btn-sm p-0 ms-1 text-decoration-none"
+                                    onclick="reconsultarCaRapido('{{ p.ca.numero_ca|escapejs }}', '{{ p.sku|escapejs }}')"
+                                    title="Reconsultar validade do CA {{ p.ca.numero_ca }} no MTE">
+                                🔄
+                            </button>
+                        {% else %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-center text-nowrap"
+                        data-order="{% if p.ca and p.ca.data_validade %}{{ p.ca.dias_para_vencer }}{% else %}999999{% endif %}">
+                        {% if p.ca and p.ca.data_validade %}
+                            {% with dias=p.ca.dias_para_vencer %}
+                                {% if dias < 0 %}
+                                    <span class="badge bg-danger">Vencido ({{ dias }}d)</span>
+                                {% elif dias <= 90 %}
+                                    <span class="badge bg-warning text-dark">{{ dias }} dias</span>
+                                {% else %}
+                                    <span class="badge bg-success-subtle text-success border">{{ dias }} dias</span>
+                                {% endif %}
+                                <br><small class="text-muted" style="font-size: 0.70rem;">{{ p.ca.data_validade|date:"d/m/Y" }}</small>
+                            {% endwith %}
+                        {% elif p.ca %}
+                            <span class="badge bg-secondary-subtle text-secondary border">Sem Validade</span>
+                        {% else %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end fw-bold text-nowrap {% if p.estoque_atual <= 0 %}text-danger{% endif %}" data-order="{{ p.estoque_atual }}">
+                        {{ p.estoque_atual }} <small class="text-muted fw-normal">{{ p.unidade_medida }}</small>
+                    </td>
+                    <td class="text-center text-nowrap" data-order="{{ p.estoque_minimo }}">
+                        {% if p.estoque_minimo > 0 %}
+                            <span class="badge bg-dark">{{ p.estoque_minimo }}</span>
+                        {% else %}
+                            <span class="text-muted">0</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-center text-nowrap" data-order="{{ p.estoque_maximo }}">
+                        {% if p.estoque_maximo > 0 %}
+                            <span class="badge bg-secondary">{{ p.estoque_maximo }}</span>
+                        {% else %}
+                            <span class="text-muted">Auto</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-center text-nowrap">
+                        <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 fw-semibold"
+                                onclick="abrirModalEditarProduto(
+                                    '{{ p.id }}',
+                                    '{{ p.sku|escapejs }}',
+                                    '{{ p.nome|escapejs }}',
+                                    '{{ p.marca|default:''|escapejs }}',
+                                    '{{ p.categoria.nome|escapejs }}',
+                                    '{{ p.subcategoria|default:''|escapejs }}',
+                                    '{{ p.tamanho_variacao|default:''|escapejs }}',
+                                    '{{ p.unidade_medida|escapejs }}',
+                                    '{% if p.ca %}{{ p.ca.numero_ca|escapejs }}{% endif %}',
+                                    {{ p.estoque_minimo }},
+                                    {{ p.estoque_maximo }},
+                                    {{ p.item_critico|yesno:'true,false' }}
+                                )">
+                            ✏️ Editar
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- MODAL 1: CADASTRAR / EDITAR PRODUTO                                       -->
+<!-- ========================================================================= -->
+<div class="modal fade" id="modalProduto" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <form method="post" action="{% url 'salvar_produto' %}">
+                {% csrf_token %}
+                <input type="hidden" name="produto_id" id="prodInputId">
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+
+                <div class="modal-header bg-light">
+                    <h5 class="modal-title fw-bold" id="modalProdutoTitulo">✏️ Editar Produto</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Código (SKU) *</label>
+                            <input type="text" name="sku" id="prodInputSku" class="form-control" required>
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label fw-bold">Nome / Descrição do Produto *</label>
+                            <input type="text" name="nome" id="prodInputNome" class="form-control" required>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Marca / Fabricante</label>
+                            <input type="text" name="marca" id="prodInputMarca" class="form-control"
+                                   list="listaMarcas" placeholder="Ex: 3M, DANNY, CALBRAS...">
+                            <datalist id="listaMarcas">
+                                {% for m in marcas_disponiveis %}
+                                    <option value="{{ m }}">
+                                {% endfor %}
+                            </datalist>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Categoria *</label>
+                            <input type="text" name="categoria" id="prodInputCategoria" class="form-control"
+                                   list="listaCategorias" placeholder="Selecione ou digite nova..." required>
+                            <datalist id="listaCategorias">
+                                {% for cat in categorias_disponiveis %}
+                                    <option value="{{ cat }}">
+                                {% endfor %}
+                            </datalist>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Subcategoria</label>
+                            <input type="text" name="subcategoria" id="prodInputSubcategoria" class="form-control"
+                                   list="listaSubcategorias" placeholder="Ex: LUVA NITRÍLICA, BOTINA...">
+                            <datalist id="listaSubcategorias">
+                                {% for sub in subcategorias_disponiveis %}
+                                    <option value="{{ sub }}">
+                                {% endfor %}
+                            </datalist>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Tamanho / Variação</label>
+                            <input type="text" name="tamanho_variacao" id="prodInputTamanho" class="form-control"
+                                   list="listaTamanhos" placeholder="Ex: P, M, G, 40, Único...">
+                            <datalist id="listaTamanhos">
+                                {% for t in tamanhos_disponiveis %}
+                                    <option value="{{ t }}">
+                                {% endfor %}
+                            </datalist>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Unidade de Medida</label>
+                            <select name="unidade_medida" id="prodInputUnidade" class="form-select">
+                                {% for cod, label in unidades_choices %}
+                                    <option value="{{ cod }}">{{ cod }} - {{ label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold text-primary">🛡️ Número do CA</label>
+                            <input type="text" name="numero_ca" id="prodInputCa" class="form-control border-primary"
+                                   list="listaCAs" placeholder="Ex: 46381 (ou vazio se s/ CA)">
+                            <datalist id="listaCAs">
+                                {% for ca_item in cas_cadastrados %}
+                                    <option value="{{ ca_item.numero_ca }}">CA {{ ca_item.numero_ca }} - {{ ca_item.fabricante }} ({% if ca_item.data_validade %}Val: {{ ca_item.data_validade|date:"d/m/Y" }}{% else %}Sem data{% endif %})</option>
+                                {% endfor %}
+                            </datalist>
+                            <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">
+                                🔄 Ao editar o CA, a validade oficial é consultada e atualizada na hora.
+                            </small>
+                        </div>
+
+                        <hr class="my-2">
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Estoque Mínimo de Segurança</label>
+                            <input type="number" min="0" name="estoque_minimo" id="prodInputMinimo" class="form-control" value="0" required>
+                            <small class="text-muted">Dispara alerta se saldo ficar abaixo.</small>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Estoque Máximo</label>
+                            <input type="number" min="0" name="estoque_maximo" id="prodInputMaximo" class="form-control" value="0" required>
+                            <small class="text-muted">0 = usar cálculo automático pelo teto.</small>
+                        </div>
+
+                        <div class="col-md-4 d-flex align-items-center">
+                            <div class="form-check form-switch mt-3">
+                                <input class="form-check-input" type="checkbox" role="switch" name="item_critico" id="prodChkCritico">
+                                <label class="form-check-label fw-bold text-danger" for="prodChkCritico">
+                                    ⭐ Item Crítico (Não pode faltar)
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary fw-bold">💾 Salvar Produto & Atualizar CA</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- MODAL 2: CADASTRAR / CONSULTAR CA AVULSO                                  -->
+<!-- ========================================================================= -->
+<div class="modal fade" id="modalCadastroCA" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <form method="post" action="{% url 'salvar_ou_consultar_ca' %}">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+
+                <div class="modal-header bg-light">
+                    <h5 class="modal-title fw-bold">🛡️ Cadastrar ou Atualizar CA</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+
+                <div class="modal-body">
+                    <p class="small text-muted mb-3">
+                        Informe o número do CA para consultar automaticamente a <strong>Data de Validade</strong>, <strong>Situação</strong> e <strong>Fabricante</strong> na base do MTE.
+                    </p>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Número do CA *</label>
+                        <input type="text" name="numero_ca" class="form-control border-primary" placeholder="Ex: 46381" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Vincular ao Produto (SKU - Opcional)</label>
+                        <input type="text" name="sku_vincular" class="form-control" placeholder="Ex: 1008-G (deixe em branco para apenas cadastrar o CA)">
+                    </div>
+
+                    <div class="accordion" id="accManualCA">
+                        <div class="accordion-item">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed py-2 small fw-semibold" type="button"
+                                        data-bs-toggle="collapse" data-bs-target="#collapseManualCA">
+                                    ⚙️ Preenchimento Manual (Opcional - caso queira definir validade manualmente)
+                                </button>
+                            </h2>
+                            <div id="collapseManualCA" class="accordion-collapse collapse" data-bs-parent="#accManualCA">
+                                <div class="accordion-body">
+                                    <div class="mb-2">
+                                        <label class="form-label small fw-bold">Data de Validade Manual:</label>
+                                        <input type="date" name="data_validade_manual" class="form-control form-control-sm">
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label small fw-bold">Fabricante / Importador:</label>
+                                        <input type="text" name="fabricante_manual" class="form-control form-control-sm" placeholder="Ex: 3M DO BRASIL LTDA">
+                                    </div>
+                                    <div>
+                                        <label class="form-label small fw-bold">Descrição do Equipamento:</label>
+                                        <input type="text" name="descricao_manual" class="form-control form-control-sm" placeholder="Descrição técnica...">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary fw-bold">🔎 Consultar & Salvar CA</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Formulário rápido para reconsultar um CA com 1 clique -->
+<form method="post" action="{% url 'salvar_ou_consultar_ca' %}" id="formReconsultarCA" class="d-none">
+    {% csrf_token %}
+    <input type="hidden" name="numero_ca" id="reconsultaInputCa">
+    <input type="hidden" name="sku_vincular" id="reconsultaInputSku">
+    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function reconsultarCaRapido(ca, sku) {
+        document.getElementById('reconsultaInputCa').value = ca;
+        document.getElementById('reconsultaInputSku').value = sku;
+        document.getElementById('formReconsultarCA').submit();
+    }
+
+    function abrirModalNovoProduto() {
+        document.getElementById('modalProdutoTitulo').textContent = '➕ Cadastrar Novo Produto';
+        document.getElementById('prodInputId').value = '';
+        var skuInput = document.getElementById('prodInputSku');
+        skuInput.value = '';
+        skuInput.readOnly = false;
+        document.getElementById('prodInputNome').value = '';
+        document.getElementById('prodInputMarca').value = '';
+        document.getElementById('prodInputCategoria').value = 'GERAL';
+        document.getElementById('prodInputSubcategoria').value = '';
+        document.getElementById('prodInputTamanho').value = '';
+        document.getElementById('prodInputUnidade').value = 'UN';
+        document.getElementById('prodInputCa').value = '';
+        document.getElementById('prodInputMinimo').value = 0;
+        document.getElementById('prodInputMaximo').value = 0;
+        document.getElementById('prodChkCritico').checked = false;
+
+        var modal = new bootstrap.Modal(document.getElementById('modalProduto'));
+        modal.show();
+    }
+
+    function abrirModalEditarProduto(id, sku, nome, marca, categoria, subcategoria, tamanho, unidade, ca, minimo, maximo, critico) {
+        document.getElementById('modalProdutoTitulo').textContent = '✏️ Editar Produto: ' + sku;
+        document.getElementById('prodInputId').value = id;
+        var skuInput = document.getElementById('prodInputSku');
+        skuInput.value = sku;
+        skuInput.readOnly = false;
+        document.getElementById('prodInputNome').value = nome;
+        document.getElementById('prodInputMarca').value = marca;
+        document.getElementById('prodInputCategoria').value = categoria;
+        document.getElementById('prodInputSubcategoria').value = subcategoria;
+        document.getElementById('prodInputTamanho').value = tamanho;
+        document.getElementById('prodInputUnidade').value = unidade || 'UN';
+        document.getElementById('prodInputCa').value = ca || '';
+        document.getElementById('prodInputMinimo').value = minimo;
+        document.getElementById('prodInputMaximo').value = maximo;
+        document.getElementById('prodChkCritico').checked = critico;
+
+        var modal = new bootstrap.Modal(document.getElementById('modalProduto'));
+        modal.show();
+    }
+
+    $(document).ready(function() {
+        $('#tabelaGestaoProdutos').DataTable({
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json'
+            },
+            dom: "<'row mb-2 align-items-center'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                 "<'table-matrix-scroll'tr>" +
+                 "<'row mt-3 align-items-center'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+            lengthMenu: [[25, 50, 100, 250, -1], [25, 50, 100, 250, "Todos"]],
+            pageLength: 50,
+            order: []
+        });
+    });
+</script>
+{% endblock %}

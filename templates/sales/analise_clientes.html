@@ -2,17 +2,80 @@
 
 {% block title %}Análise de Clientes - AMM{% endblock %}
 
+{% block extra_head %}
+<style>
+    .kpi-clickable {
+        cursor: pointer;
+        text-decoration: none;
+        color: inherit;
+        display: block;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .kpi-clickable:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.10);
+    }
+    .table-matrix-scroll {
+        max-height: 65vh;
+        overflow: auto;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        position: relative;
+        background-color: #ffffff;
+    }
+    #tabelaClientes {
+        border-collapse: separate !important;
+        border-spacing: 0;
+        margin-bottom: 0 !important;
+    }
+    #tabelaClientes thead th {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background-color: #1e293b !important;
+        color: #ffffff !important;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        vertical-align: middle;
+        white-space: nowrap;
+        border-bottom: 2px solid #0f172a !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+    }
+    #tabelaClientes tbody td {
+        font-size: 0.85rem;
+        vertical-align: middle;
+        background-color: #ffffff;
+    }
+    #tabelaClientes tbody tr:hover td {
+        background-color: #f1f5f9 !important;
+    }
+    #tabelaClientes th.sticky-col-cliente,
+    #tabelaClientes td.sticky-col-cliente {
+        position: sticky;
+        left: 0;
+        z-index: 10;
+        border-right: 2px solid #cbd5e1 !important;
+    }
+    #tabelaClientes thead th.sticky-col-cliente {
+        z-index: 30;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="row mb-3 align-items-center">
+<div class="row mb-3 align-items-center g-2">
     <div class="col-md-7">
         <h2 class="fw-bold mb-0">👥 Análise de Carteira de Clientes</h2>
-        <p class="text-muted">Classificação por curva de faturamento (6m) e tempo de inatividade</p>
+        <p class="text-muted mb-0">
+            Classificação por curva de faturamento médio mensal (6m), tempo de inatividade e vínculo pelo vendedor da última compra.
+        </p>
     </div>
 
-    <!-- Seletor de Visão (Idêntico ao de Vendas) -->
+    <!-- Seletor de Visão (Respeitando a trava de perfil do Vendedor) -->
     <div class="col-md-5">
+        {% if pode_selecionar %}
         <form method="get" id="formVisao" class="d-flex gap-2 justify-content-md-end">
-            <!-- Mantém os filtros de curva/status se houver -->
             {% for c in curvas_selecionadas %}
                 <input type="hidden" name="curva" value="{{ c }}">
             {% endfor %}
@@ -21,10 +84,12 @@
             {% endfor %}
 
             <div class="input-group">
-                <span class="input-group-text bg-white fw-bold">👤 Visão:</span>
+                <span class="input-group-text bg-white fw-bold">👤 Carteira:</span>
                 <select name="visao" class="form-select" onchange="document.getElementById('formVisao').submit();">
-                    <option value="EMPRESA" {% if visao_selecionada == 'EMPRESA' %}selected{% endif %}>🏢 EMPRESA (Visão Geral)</option>
-                    <optgroup label="Vendedores Ativos">
+                    <option value="EMPRESA" {% if visao_selecionada == 'EMPRESA' %}selected{% endif %}>
+                        🏢 EMPRESA (Toda a Base)
+                    </option>
+                    <optgroup label="Vendedores Ativos (Dono da Última Venda)">
                         {% for vend in vendedores_disponiveis %}
                             <option value="{{ vend }}" {% if visao_selecionada == vend %}selected{% endif %}>{{ vend }}</option>
                         {% endfor %}
@@ -32,49 +97,64 @@
                 </select>
             </div>
         </form>
+        {% else %}
+        <div class="input-group">
+            <span class="input-group-text bg-white fw-bold">👤 Sua Carteira:</span>
+            <input type="text" class="form-control bg-light fw-bold" value="{{ visao_selecionada }}" readonly>
+        </div>
+        {% endif %}
     </div>
 </div>
 
-<!-- Cards Resumo / Visão Geral da Carteira -->
+<!-- Cards Resumo / Visão Geral da Carteira (Clicáveis para filtrar) -->
 <div class="row g-3 mb-4">
-    <div class="col-md-2 col-6">
-        <div class="card card-kpi p-3 bg-white border-start border-primary border-4">
-            <span class="text-muted small">Total Clientes</span>
-            <h3 class="fw-bold text-dark mb-0">{{ kpis.total_clientes|default:"0" }}</h3>
-        </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?visao={{ visao_selecionada|urlencode }}&curva=AA&curva=A&curva=B&curva=C&curva=D&status=Novo&status=Ativo&status=Em+Risco&status=Inativo"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-primary border-4 h-100">
+            <span class="text-muted small fw-bold">🏢 Total Carteira</span>
+            <h3 class="fw-bold text-dark mb-0 mt-1">{{ kpis.total_clientes|default:"0" }}</h3>
+            <small class="text-muted">Clientes consolidados</small>
+        </a>
     </div>
-    <div class="col-md-2 col-6">
-        <div class="card card-kpi p-3 bg-white border-start border-success border-4">
-            <span class="text-muted small">Ativos (≤30d)</span>
-            <h3 class="fw-bold text-success mb-0">{{ kpis.clientes_ativos|default:"0" }}</h3>
-        </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?visao={{ visao_selecionada|urlencode }}&curva=AA&curva=A&curva=B&curva=C&curva=D&status=Ativo"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-success border-4 h-100">
+            <span class="text-muted small fw-bold">🟢 Ativos (≤30d)</span>
+            <h3 class="fw-bold text-success mb-0 mt-1">{{ kpis.clientes_ativos|default:"0" }}</h3>
+            <small class="text-muted">Compraram recentemente</small>
+        </a>
     </div>
-    <div class="col-md-2 col-6">
-        <div class="card card-kpi p-3 bg-white border-start border-warning border-4">
-            <span class="text-muted small">Em Risco (31-90d)</span>
-            <h3 class="fw-bold text-warning mb-0">{{ kpis.clientes_risco|default:"0" }}</h3>
-        </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?visao={{ visao_selecionada|urlencode }}&curva=AA&curva=A&curva=B&curva=C&curva=D&status=Em+Risco"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-warning border-4 h-100">
+            <span class="text-muted small fw-bold">🟠 Em Risco (31-90d)</span>
+            <h3 class="fw-bold text-warning mb-0 mt-1">{{ kpis.clientes_risco|default:"0" }}</h3>
+            <small class="text-muted">Em risco: <strong>{{ kpis.potencial_risco_mensal|default:"R$ 0,00" }}/mês</strong></small>
+        </a>
     </div>
-    <div class="col-md-2 col-6">
-        <div class="card card-kpi p-3 bg-white border-start border-danger border-4">
-            <span class="text-muted small">Inativos (>90d)</span>
-            <h3 class="fw-bold text-danger mb-0">{{ kpis.clientes_inativos|default:"0" }}</h3>
-        </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?visao={{ visao_selecionada|urlencode }}&curva=AA&curva=A&curva=B&curva=C&curva=D&status=Inativo"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-danger border-4 h-100">
+            <span class="text-muted small fw-bold">🔴 Inativos (>90d)</span>
+            <h3 class="fw-bold text-danger mb-0 mt-1">{{ kpis.clientes_inativos|default:"0" }}</h3>
+            <small class="text-muted">Ação de reativação</small>
+        </a>
     </div>
-    <div class="col-md-2 col-6">
-        <div class="card card-kpi p-3 bg-white border-start border-info border-4">
-            <span class="text-muted small">Alta Prioridade</span>
-            <h3 class="fw-bold text-info mb-0">{{ kpis.prioritarios|default:"0" }}</h3>
-        </div>
+    <div class="col-xl-2 col-md-4 col-6">
+        <a href="?visao={{ visao_selecionada|urlencode }}&curva=AA&curva=A&curva=B&status=Novo&status=Ativo&status=Em+Risco&status=Inativo"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-info border-4 h-100">
+            <span class="text-muted small fw-bold">🎯 Alta Prioridade</span>
+            <h3 class="fw-bold text-info mb-0 mt-1">{{ kpis.prioritarios|default:"0" }}</h3>
+            <small class="text-muted">Curvas AA, A e B</small>
+        </a>
     </div>
-    {% if visao_selecionada == "EMPRESA" %}
-    <div class="col-md-2 col-6">
-        <div class="card card-kpi p-3 bg-white border-start border-secondary border-4">
-            <span class="text-muted small">Fat. da Carteira</span>
+    <div class="col-xl-2 col-md-4 col-6">
+        <div class="card card-kpi p-3 bg-white border-start border-secondary border-4 h-100">
+            <span class="text-muted small fw-bold">💰 Fat. Acumulado</span>
             <h5 class="fw-bold text-secondary mb-0 mt-1">{{ kpis.faturamento_carteira|default:"R$ 0,00" }}</h5>
+            <small class="text-muted">Novos no ano: <strong>{{ kpis.clientes_novos|default:"0" }}</strong></small>
         </div>
     </div>
-    {% endif %}
 </div>
 
 <!-- Gráficos de Foco e Matriz de Risco -->
@@ -84,7 +164,7 @@
             {% if grafico_status %}
                 {{ grafico_status|safe }}
             {% else %}
-                <div class="text-center p-5 text-muted">Sem dados de clientes prioritários.</div>
+                <div class="text-center p-5 text-muted">Sem dados de clientes para os filtros selecionados.</div>
             {% endif %}
         </div>
     </div>
@@ -101,12 +181,15 @@
 
 <!-- Bloco da Tabela Analítica com Filtros -->
 <div class="card card-kpi bg-white p-4 mb-5">
-    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
-        <h4 class="fw-bold mb-2">📋 Tabela Analítica de Clientes</h4>
-        
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div>
+            <h4 class="fw-bold mb-0">📋 Tabela Analítica de Clientes ({{ tabela_clientes|length }} exibidos)</h4>
+            <small class="text-muted">Clique em <strong>📦 Mix & Estoque</strong> para abrir o histórico de produtos comprados pelo cliente ao lado do nosso estoque atual.</small>
+        </div>
+
         <form method="get" class="d-flex flex-wrap gap-2 align-items-center">
             <input type="hidden" name="visao" value="{{ visao_selecionada }}">
-            
+
             <span class="small text-muted fw-bold">Curvas:</span>
             {% for c in curvas_disponiveis %}
                 <div class="form-check form-check-inline m-0">
@@ -125,43 +208,41 @@
                 </div>
             {% endfor %}
 
-            {% if curvas_selecionadas or status_selecionados %}
-                <a href="?visao={{ visao_selecionada }}" class="btn btn-sm btn-link text-danger">Limpar Filtros</a>
-            {% endif %}
+            <a href="?visao={{ visao_selecionada|urlencode }}" class="btn btn-sm btn-link text-danger">Padrão (AA/A/B)</a>
         </form>
     </div>
 
-    <div class="table-responsive">
+    <div>
         <table id="tabelaClientes" class="table table-hover align-middle w-100">
-            <thead class="table-light">
+            <thead>
                 <tr>
-                    <th>Empresa</th>
-                    <th>Vendedor</th>
+                    <th class="sticky-col-cliente">Empresa (Consolidada por CNPJ)</th>
+                    <th>Vendedor Atual</th>
                     <th class="text-center">Curva</th>
                     <th class="text-center">Status</th>
                     <th class="text-end">Fat. Médio Mensal (6m)</th>
                     <th class="text-center">Dias Inativos</th>
                     <th class="text-center">Última Venda</th>
-                    <th class="text-end">Fat. Total (Visão)</th>
-                    <th class="text-center">Qtd Vendas</th>
+                    <th class="text-end">Fat. Histórico Total</th>
+                    <th class="text-center">Qtd NFs</th>
                 </tr>
             </thead>
             <tbody>
                 {% for row in tabela_clientes %}
                 <tr>
-                    <td class="fw-bold">
+                    <td class="fw-bold sticky-col-cliente">
                         <a href="{% url 'dashboard_estoque' %}?aba=clientes&cliente={{ row.cliente_nome|urlencode }}"
                            class="text-decoration-none text-dark d-flex align-items-center justify-content-between gap-2"
                            title="Ver produtos que este cliente compra e situação do estoque">
                             <span>{{ row.cliente_nome }}</span>
-                            <span class="badge bg-light text-primary border fw-normal">📦 Mix & Estoque</span>
+                            <span class="badge bg-light text-primary border fw-normal text-nowrap">📦 Mix & Estoque</span>
                         </a>
                     </td>
-                    <td>{{ row.Vendedora|default:"-" }}</td>
-                    <td class="text-center">
+                    <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ row.Vendedora|default:"-" }}</span></td>
+                    <td class="text-center text-nowrap">
                         <span class="badge badge-curva-{{ row.Curva }} px-2 py-1">{{ row.Curva }}</span>
                     </td>
-                    <td class="text-center">
+                    <td class="text-center text-nowrap">
                         {% if row.Status == 'Ativo' %}
                             <span class="badge bg-success">{{ row.Status }}</span>
                         {% elif row.Status == 'Em Risco' %}
@@ -172,11 +253,22 @@
                             <span class="badge bg-danger">{{ row.Status }}</span>
                         {% endif %}
                     </td>
-                    <td class="text-end">R$ {{ row.Ticket_Medio_6m|floatformat:2 }}</td>
-                    <td class="text-center fw-bold">{{ row.Dias_Inatividade }} d</td>
-                    <td class="text-center">{{ row.Ultima_Venda_str }}</td>
-                    <td class="text-end fw-bold text-success">R$ {{ row.Faturamento_Total|floatformat:2 }}</td>
-                    <td class="text-center">{{ row.Num_Vendas }}</td>
+                    <td class="text-end text-nowrap fw-semibold" data-order="{{ row.Ticket_Medio_6m|stringformat:'.2f' }}">
+                        R$ {{ row.Ticket_Medio_6m|floatformat:2 }}
+                    </td>
+                    <td class="text-center fw-bold text-nowrap {% if row.Dias_Inatividade > 90 %}text-danger{% elif row.Dias_Inatividade > 30 %}text-warning-emphasis{% else %}text-success{% endif %}"
+                        data-order="{{ row.Dias_Inatividade }}">
+                        {{ row.Dias_Inatividade }} d
+                    </td>
+                    <td class="text-center text-nowrap" data-order="{{ row.Ultima_Venda_iso }}">
+                        {{ row.Ultima_Venda_str }}
+                    </td>
+                    <td class="text-end fw-bold text-success text-nowrap" data-order="{{ row.Faturamento_Total|stringformat:'.2f' }}">
+                        R$ {{ row.Faturamento_Total|floatformat:2 }}
+                    </td>
+                    <td class="text-center text-nowrap" data-order="{{ row.Num_Vendas }}">
+                        {{ row.Num_Vendas }}
+                    </td>
                 </tr>
                 {% empty %}
                 <tr>
@@ -196,7 +288,11 @@
             language: {
                 url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json'
             },
+            dom: "<'row mb-2 align-items-center'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                 "<'table-matrix-scroll'tr>" +
+                 "<'row mt-3 align-items-center'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
             pageLength: 25,
+            lengthMenu: [[25, 50, 100, 250, -1], [25, 50, 100, 250, "Todos"]],
             order: []
         });
     });

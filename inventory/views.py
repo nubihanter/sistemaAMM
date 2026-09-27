@@ -1,14 +1,26 @@
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db.models import Q
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render, redirect
+from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-from .models import Categoria, ProdutoEPI
+from integrations.ca_epi import ConsultaCAClient
+from .models import Categoria, CertificadoAprovacao, ProdutoEPI
 from .dashboard_services import gerar_analise_estoque_e_compras
-from .services import sincronizar_estoque_e_itens_rapido
+from .services import sincronizar_estoque_e_itens_rapido, sincronizar_vencimentos_ca
+
+
+def _usuario_pode_gerenciar_produtos(user) -> bool:
+    """Apenas perfis COMPRAS, ADMINISTRADOR e ALMOXARIFADO possuem acesso à página de Produtos e CA."""
+    return bool(
+        getattr(user, "is_admin", False)
+        or getattr(user, "is_compras", False)
+        or getattr(user, "is_almoxarifado", False)
+    )
 
 
 @login_required
@@ -217,6 +229,8 @@ def exportar_compras_csv_view(request):
         "Marca",
         "Unidade",
         "CA",
+        "Validade CA",
+        "Dias p/ Vencer CA",
         "Item Crítico",
         "Curva ABC",
         "Padrão Demanda",
@@ -266,12 +280,15 @@ def exportar_compras_csv_view(request):
     }
 
     for row_idx, r in enumerate(dados["tabela_compras"], start=2):
+        dias_ca_val = int(r["Dias_Para_Vencer_CA"]) if r.get("Tem_Validade_CA") else "-"
         linha = [
             str(r["codigo_produto"]),
             r["nome"],
             r["marca"],
             r["unidade_medida"],
             r["ca__numero_ca"],
+            r.get("Validade_CA_Str", "-"),
+            dias_ca_val,
             "SIM" if r["item_critico"] else ("SUGERIDO" if r["Sugestao_Critico"] else "NÃO"),
             r["Curva_ABC"],
             r["Padrao_Demanda"],
@@ -301,20 +318,20 @@ def exportar_compras_csv_view(request):
         ws.append(linha)
 
         # Formatação numérica e visual da linha
-        ws.cell(row=row_idx, column=12).number_format = "0.0"
-        ws.cell(row=row_idx, column=13).number_format = "+0.0;-0.0;0.0"
-        ws.cell(row=row_idx, column=20).number_format = "0.0"
-        status_cell = ws.cell(row=row_idx, column=21)
+        ws.cell(row=row_idx, column=14).number_format = "0.0"
+        ws.cell(row=row_idx, column=15).number_format = "+0.0;-0.0;0.0"
+        ws.cell(row=row_idx, column=22).number_format = "0.0"
+        status_cell = ws.cell(row=row_idx, column=23)
         if r["Status"] in status_fills:
             status_cell.fill = status_fills[r["Status"]]
             status_cell.font = Font(bold=True, size=9)
 
         if int(r["Qtd_Sugerida_Compra"]) > 0:
-            ws.cell(row=row_idx, column=22).font = Font(bold=True, color="DC2626")
+            ws.cell(row=row_idx, column=24).font = Font(bold=True, color="DC2626")
 
         if pode_ver_valores_financeiros:
-            ws.cell(row=row_idx, column=23).number_format = '"R$" #,##0.00'
-            ws.cell(row=row_idx, column=24).number_format = '"R$" #,##0.00'
+            ws.cell(row=row_idx, column=25).number_format = '"R$" #,##0.00'
+            ws.cell(row=row_idx, column=26).number_format = '"R$" #,##0.00'
 
         for c_i in range(1, len(cabecalho) + 1):
             ws.cell(row=row_idx, column=c_i).border = thin_border
@@ -345,4 +362,337 @@ def exportar_compras_csv_view(request):
     )
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
+
+
+@login_required
+def gestao_produtos_view(request):
+    """
+    Página exclusiva de Gestão de Produtos e Certificados de Aprovação (CA).
+    Acesso restrito aos perfis COMPRAS, ADMINISTRADOR e ALMOXARIFADO.
+    Permite cadastrar/editar: Estoque Mínimo, Estoque Máximo, Categoria, Subcategoria, Tamanho, CA e Marca.
+    """
+    if not _usuario_pode_gerenciar_produtos(request.user):
+        messages.warning(
+            request,
+            "Acesso restrito: a página de Cadastro e Edição de Produtos é exclusiva para os perfis Compras, Almoxarifado e Administrador.",
+        )
+        return redirect("dashboard_vendas")
+
+    hoje = timezone.now().date()
+    limite_a_vencer = hoje + timedelta(days=90)
+
+    busca = request.GET.get("q", "").strip()
+    categoria_filtro = request.GET.get("categoria", "TODAS").strip()
+    subcategoria_filtro = request.GET.get("subcategoria", "TODAS").strip()
+    marca_filtro = request.GET.get("marca", "TODAS").strip()
+    filtro_ca = request.GET.get("filtro_ca", "TODOS").strip()
+
+    base_qs = ProdutoEPI.objects.select_related("categoria", "ca").all()
+
+    # KPIs gerais do cadastro de produtos e CAs
+    total_produtos = base_qs.count()
+    qtd_com_ca = base_qs.filter(ca__isnull=False).count()
+    qtd_sem_ca = base_qs.filter(ca__isnull=True).count()
+    qtd_ca_vencido = base_qs.filter(ca__data_validade__lt=hoje).count()
+    qtd_ca_a_vencer = base_qs.filter(
+        ca__data_validade__gte=hoje,
+        ca__data_validade__lte=limite_a_vencer,
+    ).count()
+    qtd_minimo_config = base_qs.filter(Q(item_critico=True) | Q(estoque_minimo__gt=0)).count()
+
+    # Listas para filtros e autocompletar nos modais
+    categorias_disponiveis = list(
+        Categoria.objects.order_by("nome").values_list("nome", flat=True)
+    )
+    subcategorias_disponiveis = sorted(
+        {
+            s.strip()
+            for s in base_qs.exclude(subcategoria__isnull=True)
+            .exclude(subcategoria="")
+            .values_list("subcategoria", flat=True)
+            if s and s.strip()
+        }
+    )
+    marcas_disponiveis = sorted(
+        {
+            m.strip()
+            for m in base_qs.exclude(marca__isnull=True)
+            .exclude(marca="")
+            .values_list("marca", flat=True)
+            if m and m.strip() and m.strip().upper() != "N/A"
+        }
+    )
+    tamanhos_disponiveis = sorted(
+        {
+            t.strip()
+            for t in base_qs.exclude(tamanho_variacao__isnull=True)
+            .exclude(tamanho_variacao="")
+            .values_list("tamanho_variacao", flat=True)
+            if t and t.strip()
+        }
+    )
+
+    # Aplicação dos filtros na listagem
+    qs_filtrado = base_qs
+    if busca:
+        qs_filtrado = qs_filtrado.filter(
+            Q(sku__icontains=busca)
+            | Q(nome__icontains=busca)
+            | Q(marca__icontains=busca)
+            | Q(ca__numero_ca__icontains=busca)
+            | Q(subcategoria__icontains=busca)
+        )
+    if categoria_filtro and categoria_filtro != "TODAS":
+        qs_filtrado = qs_filtrado.filter(categoria__nome=categoria_filtro)
+    if subcategoria_filtro and subcategoria_filtro != "TODAS":
+        qs_filtrado = qs_filtrado.filter(subcategoria=subcategoria_filtro)
+    if marca_filtro and marca_filtro != "TODAS":
+        qs_filtrado = qs_filtrado.filter(marca=marca_filtro)
+
+    if filtro_ca == "COM_CA":
+        qs_filtrado = qs_filtrado.filter(ca__isnull=False)
+    elif filtro_ca == "SEM_CA":
+        qs_filtrado = qs_filtrado.filter(ca__isnull=True)
+    elif filtro_ca == "CA_VENCIDO":
+        qs_filtrado = qs_filtrado.filter(ca__data_validade__lt=hoje)
+    elif filtro_ca == "CA_A_VENCER":
+        qs_filtrado = qs_filtrado.filter(
+            ca__data_validade__gte=hoje,
+            ca__data_validade__lte=limite_a_vencer,
+        )
+    elif filtro_ca == "CA_VALIDO":
+        qs_filtrado = qs_filtrado.filter(ca__data_validade__gt=limite_a_vencer)
+    elif filtro_ca == "EDITADOS":
+        qs_filtrado = qs_filtrado.filter(editado_manualmente=True)
+
+    produtos = list(qs_filtrado.order_by("nome", "sku"))
+    cas_cadastrados = list(CertificadoAprovacao.objects.order_by("numero_ca"))
+
+    context = {
+        "produtos": produtos,
+        "cas_cadastrados": cas_cadastrados,
+        "unidades_choices": ProdutoEPI.UNIDADE_MEDIDA_CHOICES,
+        "categorias_disponiveis": categorias_disponiveis,
+        "subcategorias_disponiveis": subcategorias_disponiveis,
+        "marcas_disponiveis": marcas_disponiveis,
+        "tamanhos_disponiveis": tamanhos_disponiveis,
+        "busca": busca,
+        "categoria_filtro": categoria_filtro,
+        "subcategoria_filtro": subcategoria_filtro,
+        "marca_filtro": marca_filtro,
+        "filtro_ca": filtro_ca,
+        "kpis": {
+            "total_produtos": total_produtos,
+            "qtd_com_ca": qtd_com_ca,
+            "qtd_sem_ca": qtd_sem_ca,
+            "qtd_ca_vencido": qtd_ca_vencido,
+            "qtd_ca_a_vencer": qtd_ca_a_vencer,
+            "qtd_minimo_config": qtd_minimo_config,
+        },
+    }
+    return render(request, "inventory/gestao_produtos.html", context)
+
+
+@login_required
+@require_POST
+def salvar_produto_view(request):
+    """
+    Cria ou edita um ProdutoEPI (Estoque Mínimo, Estoque Máximo, Categoria, Subcategoria,
+    Tamanho, CA e Marca).
+    Sempre que o CA é informado ou editado, roda automaticamente a consulta e atualização
+    do CA específico daquele item.
+    """
+    if not _usuario_pode_gerenciar_produtos(request.user):
+        messages.error(request, "Sem permissão para editar produtos.")
+        return redirect("dashboard_estoque")
+
+    produto_id = request.POST.get("produto_id", "").strip()
+    sku = request.POST.get("sku", "").strip().upper()
+    nome = request.POST.get("nome", "").strip()
+    marca = request.POST.get("marca", "").strip().upper() or "N/A"
+    categoria_nome = request.POST.get("categoria", "").strip().upper() or "GERAL"
+    subcategoria = request.POST.get("subcategoria", "").strip().upper() or None
+    tamanho_variacao = request.POST.get("tamanho_variacao", "").strip() or None
+    unidade_medida = request.POST.get("unidade_medida", "UN").strip().upper() or "UN"
+    numero_ca_raw = request.POST.get("numero_ca", "").strip()
+    item_critico = request.POST.get("item_critico") in ("on", "true", "1", "True")
+
+    try:
+        estoque_minimo = max(0, int(request.POST.get("estoque_minimo", 0) or 0))
+    except ValueError:
+        estoque_minimo = 0
+
+    try:
+        estoque_maximo = max(0, int(request.POST.get("estoque_maximo", 0) or 0))
+    except ValueError:
+        estoque_maximo = 0
+
+    if not sku:
+        messages.error(request, "O código (SKU) do produto é obrigatório.")
+        return redirect(request.POST.get("next") or "gestao_produtos")
+
+    categoria_obj, _ = Categoria.objects.get_or_create(
+        nome=categoria_nome,
+        defaults={"descricao": f"Categoria cadastrada via Gestão de Produtos: {categoria_nome}"},
+    )
+
+    if produto_id:
+        produto = ProdutoEPI.objects.select_related("ca").filter(pk=produto_id).first()
+        if not produto:
+            messages.error(request, "Produto não encontrado para edição.")
+            return redirect(request.POST.get("next") or "gestao_produtos")
+    else:
+        produto = ProdutoEPI.objects.select_related("ca").filter(sku=sku).first()
+
+    ca_anterior = produto.ca.numero_ca if (produto and produto.ca) else None
+    ca_limpo = ConsultaCAClient.limpar_numero_ca(numero_ca_raw) if numero_ca_raw else ""
+
+    ca_obj = None
+    msg_ca_extra = ""
+
+    if ca_limpo:
+        # Sempre que o CA for editado (ou se ainda não possuir validade), rerroda a atualização do CA específico
+        ca_foi_editado = (ca_limpo != ca_anterior)
+        ca_existente = CertificadoAprovacao.objects.filter(numero_ca=ca_limpo).first()
+
+        if ca_foi_editado or not ca_existente or not ca_existente.data_validade:
+            res_ca = sincronizar_vencimentos_ca(
+                forcar_todos=True,
+                numero_ca_especifico=ca_limpo,
+                max_workers=1,
+            )
+            ca_obj = CertificadoAprovacao.objects.filter(numero_ca=ca_limpo).first()
+            if ca_obj and ca_obj.data_validade:
+                dias_rest = ca_obj.dias_para_vencer
+                msg_ca_extra = (
+                    f" | CA {ca_limpo} consultado e atualizado automaticamente: "
+                    f"validade {ca_obj.data_validade.strftime('%d/%m/%Y')} ({dias_rest} dias - {ca_obj.get_status_display()})."
+                )
+            else:
+                msg_ca_extra = (
+                    f" | CA {ca_limpo} vinculado, porém não foi localizado na base online do MTE. "
+                    f"Se necessário, informe a validade manualmente em 'Cadastrar / Consultar CA'."
+                )
+        else:
+            ca_obj = ca_existente
+            if ca_obj.data_validade:
+                msg_ca_extra = f" | CA {ca_limpo} (Validade: {ca_obj.data_validade.strftime('%d/%m/%Y')})."
+
+    if produto:
+        produto.sku = sku
+        if nome:
+            produto.nome = nome
+        produto.marca = marca
+        produto.categoria = categoria_obj
+        produto.subcategoria = subcategoria
+        produto.tamanho_variacao = tamanho_variacao
+        produto.unidade_medida = unidade_medida
+        produto.ca = ca_obj
+        produto.estoque_minimo = estoque_minimo
+        produto.estoque_maximo = estoque_maximo
+        produto.item_critico = item_critico
+        produto.editado_manualmente = True
+        produto.save()
+        acao_str = "atualizado"
+    else:
+        produto = ProdutoEPI.objects.create(
+            sku=sku,
+            nome=nome or sku,
+            marca=marca,
+            categoria=categoria_obj,
+            subcategoria=subcategoria,
+            tamanho_variacao=tamanho_variacao,
+            unidade_medida=unidade_medida,
+            ca=ca_obj,
+            estoque_minimo=estoque_minimo,
+            estoque_maximo=estoque_maximo,
+            item_critico=item_critico,
+            editado_manualmente=True,
+        )
+        acao_str = "cadastrado"
+
+    messages.success(
+        request,
+        f"Produto {produto.sku} ({produto.nome}) {acao_str} com sucesso! "
+        f"[Categoria: {categoria_obj.nome}"
+        f"{f' / {subcategoria}' if subcategoria else ''} | "
+        f"Marca: {marca} | Tam: {tamanho_variacao or '-'} | "
+        f"Mín: {estoque_minimo} | Máx: {estoque_maximo}]{msg_ca_extra}",
+    )
+    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/inventory/produtos/"
+    return redirect(next_url)
+
+
+@login_required
+@require_POST
+def salvar_ou_consultar_ca_view(request):
+    """
+    Permite cadastrar um novo CA ou forçar a reconsulta de um CA específico na base MTE,
+    com suporte opcional a preenchimento manual de data de validade e fabricante.
+    """
+    if not _usuario_pode_gerenciar_produtos(request.user):
+        messages.error(request, "Sem permissão para gerenciar CAs.")
+        return redirect("dashboard_estoque")
+
+    numero_ca_raw = request.POST.get("numero_ca", "").strip()
+    ca_limpo = ConsultaCAClient.limpar_numero_ca(numero_ca_raw)
+    if not ca_limpo:
+        messages.error(request, "Informe um número de CA válido.")
+        return redirect(request.POST.get("next") or "gestao_produtos")
+
+    data_manual_str = request.POST.get("data_validade_manual", "").strip()
+    fabricante_manual = request.POST.get("fabricante_manual", "").strip()
+    descricao_manual = request.POST.get("descricao_manual", "").strip()
+    sku_vincular = request.POST.get("sku_vincular", "").strip().upper()
+
+    # Roda a consulta oficial do CA específico
+    sincronizar_vencimentos_ca(
+        forcar_todos=True,
+        numero_ca_especifico=ca_limpo,
+        max_workers=1,
+    )
+
+    ca_obj = CertificadoAprovacao.objects.filter(numero_ca=ca_limpo).first()
+
+    # Se o usuário informou dados manuais (ex: correção manual de validade/fabricante), aplica por cima
+    if ca_obj and (data_manual_str or fabricante_manual or descricao_manual):
+        if data_manual_str:
+            try:
+                dt_man = datetime.strptime(data_manual_str, "%Y-%m-%d").date()
+                ca_obj.data_validade = dt_man
+                ca_obj.status = "VENCIDO" if dt_man < timezone.now().date() else "VALIDO"
+            except ValueError:
+                pass
+        if fabricante_manual:
+            ca_obj.fabricante = fabricante_manual[:255]
+        if descricao_manual:
+            ca_obj.descricao_equipamento = descricao_manual
+        ca_obj.save()
+
+    msg_vinculo = ""
+    if sku_vincular and ca_obj:
+        prod = ProdutoEPI.objects.filter(sku=sku_vincular).first()
+        if prod:
+            prod.ca = ca_obj
+            prod.editado_manualmente = True
+            prod.save(update_fields=["ca", "editado_manualmente", "data_atualizacao"])
+            msg_vinculo = f" e vinculado ao produto {prod.sku}"
+
+    if ca_obj and ca_obj.data_validade:
+        messages.success(
+            request,
+            f"CA {ca_obj.numero_ca} atualizado com sucesso{msg_vinculo}! "
+            f"Validade: {ca_obj.data_validade.strftime('%d/%m/%Y')} ({ca_obj.dias_para_vencer} dias) | "
+            f"Status: {ca_obj.get_status_display()} | Fabricante: {ca_obj.fabricante}.",
+        )
+    else:
+        messages.warning(
+            request,
+            f"CA {ca_limpo} registrado{msg_vinculo}, mas não retornou data de validade automática na base MTE. "
+            f"Você pode informar a data de validade manualmente caso necessário.",
+        )
+
+    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/inventory/produtos/"
+    return redirect(next_url)
+
 

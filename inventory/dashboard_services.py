@@ -2,7 +2,7 @@ import base64
 import json
 import math
 import uuid
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -442,6 +442,39 @@ def gerar_analise_estoque_e_compras(
         valor_estoque_custo = round(max(0, est_atual) * custo_unit, 2)
         valor_excesso_custo = round(max(0, qtd_excesso) * custo_unit, 2)
 
+        # Cálculo de Dias para Vencer CA
+        ca_num = str(row.get("ca__numero_ca") or "-").strip()
+        ca_dt_raw = row.get("ca__data_validade")
+        tem_validade_ca = False
+        dias_para_vencer_ca = 0
+        validade_ca_str = "-"
+        status_ca = "-"
+
+        if ca_dt_raw is not None and not pd.isna(ca_dt_raw):
+            if isinstance(ca_dt_raw, datetime):
+                ca_dt = ca_dt_raw.date()
+            elif isinstance(ca_dt_raw, date):
+                ca_dt = ca_dt_raw
+            else:
+                try:
+                    ca_dt = pd.to_datetime(ca_dt_raw).date()
+                except Exception:
+                    ca_dt = None
+
+            if ca_dt:
+                tem_validade_ca = True
+                dias_para_vencer_ca = int((ca_dt - hoje).days)
+                validade_ca_str = ca_dt.strftime("%d/%m/%Y")
+                if dias_para_vencer_ca < 0:
+                    status_ca = "VENCIDO"
+                elif dias_para_vencer_ca <= 60:
+                    status_ca = "A VENCER"
+                else:
+                    status_ca = "VÁLIDO"
+        elif ca_num not in ("-", "", "None", "nan"):
+            validade_ca_str = "Pendente"
+            status_ca = "PENDENTE"
+
         return pd.Series(
             [
                 demanda_prox_mes,
@@ -459,6 +492,10 @@ def gerar_analise_estoque_e_compras(
                 valor_excesso_custo,
                 ult_venda.strftime("%d/%m/%Y") if ult_venda else "Sem registro",
                 dias_sem_vender if dias_sem_vender is not None else 999,
+                tem_validade_ca,
+                dias_para_vencer_ca,
+                validade_ca_str,
+                status_ca,
             ],
             index=[
                 "Demanda_Prox_Mes",
@@ -476,6 +513,10 @@ def gerar_analise_estoque_e_compras(
                 "Valor_Excesso_Custo",
                 "Ultima_Venda_Str",
                 "Dias_Sem_Vender",
+                "Tem_Validade_CA",
+                "Dias_Para_Vencer_CA",
+                "Validade_CA_Str",
+                "Status_CA",
             ],
         )
 
