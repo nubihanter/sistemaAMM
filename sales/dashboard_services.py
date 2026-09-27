@@ -1,14 +1,45 @@
 # sales/dashboard_services.py
+import base64
+import json
+import uuid
 from datetime import datetime, timedelta, date
 import unicodedata
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.utils import PlotlyJSONEncoder
 from django.core.cache import cache
 from .models import MetaVendedor, Vendedor
 
 from integrations.piperun import PipeRunAPI
 USUARIO_PIPERUN_META_EMPRESA = "MARCELO NERIS"
+
+
+def _clean_bdata(obj):
+    if isinstance(obj, dict):
+        if "bdata" in obj and "dtype" in obj:
+            raw = base64.b64decode(obj["bdata"])
+            return np.frombuffer(raw, dtype=obj["dtype"]).tolist()
+        return {k: _clean_bdata(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_clean_bdata(x) for x in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
+def fig_to_html(fig):
+    """Renderiza figura Plotly convertendo arrays binários bdata (Plotly 6+) para listas JSON puras."""
+    fig_dict = _clean_bdata(fig.to_plotly_json())
+    div_id = f"plotly-{uuid.uuid4().hex[:12]}"
+    data_json = json.dumps(fig_dict.get("data", []), cls=PlotlyJSONEncoder)
+    layout_json = json.dumps(fig_dict.get("layout", {}), cls=PlotlyJSONEncoder)
+    height = fig_dict.get("layout", {}).get("height", 360)
+    return (
+        f'<div id="{div_id}" class="plotly-graph-div" style="height:{height}px; width:100%;"></div>'
+        f'<script>if(window.Plotly){{Plotly.newPlot("{div_id}", {data_json}, {layout_json}, {{responsive: true}});}}</script>'
+    )
 
 
 def normalizar_nome(nome):
@@ -182,11 +213,11 @@ def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_se
         if meta_periodo > 0:
             fig_linha.add_hline(y=meta_periodo, line_dash="dash", line_color="green", annotation_text="Meta Total", annotation_position="top left")
         fig_linha.update_layout(height=350, margin=dict(t=40, b=20, l=20, r=20))
-        grafico_evolucao_html = fig_linha.to_html(full_html=False, include_plotlyjs=False)
+        grafico_evolucao_html = fig_to_html(fig_linha)
 
         fig_barras = px.bar(df_diario, x='Data', y='Quantidade', title="Nº Vendas por Dia")
         fig_barras.update_layout(height=350, margin=dict(t=40, b=20, l=20, r=20))
-        grafico_barras_qtd_html = fig_barras.to_html(full_html=False, include_plotlyjs=False)
+        grafico_barras_qtd_html = fig_to_html(fig_barras)
 
     # Gráfico 2: Ranking por % da Meta
     grafico_ranking_html = ""
@@ -269,7 +300,7 @@ def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_se
             height=450,
             margin=dict(t=50, b=100, l=20, r=20)
         )
-        grafico_ranking_html = fig_ranking.to_html(full_html=False, include_plotlyjs=False)
+        grafico_ranking_html = fig_to_html(fig_ranking)
 
     # Gráfico 3: Histórico de Metas vs Realizado (Últimas 3 Metas)
     grafico_historico_metas_html = ""
@@ -311,7 +342,7 @@ def gerar_metricas_e_graficos(df, vendedora_selecionada, mes_selecionado, ano_se
             text_auto=True
         )
         fig_compare.update_layout(height=350, margin=dict(t=40, b=20, l=20, r=20))
-        grafico_historico_metas_html = fig_compare.to_html(full_html=False, include_plotlyjs=False)
+        grafico_historico_metas_html = fig_to_html(fig_compare)
 
     return metricas, grafico_evolucao_html, grafico_barras_qtd_html, grafico_ranking_html, grafico_historico_metas_html
 
@@ -464,7 +495,7 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
             text_auto=True
         )
         fig_status.update_layout(yaxis_title="Qtd Clientes", height=380, margin=dict(t=40, b=20, l=20, r=20))
-        grafico_status_html = fig_status.to_html(full_html=False, include_plotlyjs=False)
+        grafico_status_html = fig_to_html(fig_status)
 
         # Gráfico 2: Matriz de Risco (Inatividade vs Ticket 6m)[cite: 6]
         df_prioridade['Tamanho_Bolha'] = df_prioridade['Faturamento_Total'].clip(lower=100.0)
@@ -498,7 +529,7 @@ def gerar_analise_clientes(df, vendedora_selecionada="EMPRESA", filtros_curva=No
         fig_scatter.add_vline(x=30, line_dash="dash", line_color="green", annotation_text="Ativos", annotation_position="top left")
         fig_scatter.add_vline(x=90, line_dash="dash", line_color="red", annotation_text="Inativos", annotation_position="top right")
         fig_scatter.update_layout(height=380, margin=dict(t=40, b=20, l=20, r=20))
-        grafico_matriz_html = fig_scatter.to_html(full_html=False, include_plotlyjs=True)
+        grafico_matriz_html = fig_to_html(fig_scatter)
 
     # 7. Preparação da Tabela Analítica[cite: 6]
     df_tabela = df_clientes.copy()

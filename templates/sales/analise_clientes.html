@@ -149,7 +149,14 @@
             <tbody>
                 {% for row in tabela_clientes %}
                 <tr>
-                    <td class="fw-bold">{{ row.cliente_nome }}</td>
+                    <td class="fw-bold">
+                        <a href="{% url 'dashboard_estoque' %}?aba=clientes&cliente={{ row.cliente_nome|urlencode }}"
+                           class="text-decoration-none text-dark d-flex align-items-center justify-content-between gap-2"
+                           title="Ver produtos que este cliente compra e situação do estoque">
+                            <span>{{ row.cliente_nome }}</span>
+                            <span class="badge bg-light text-primary border fw-normal">📦 Mix & Estoque</span>
+                        </a>
+                    </td>
                     <td>{{ row.Vendedora|default:"-" }}</td>
                     <td class="text-center">
                         <span class="badge badge-curva-{{ row.Curva }} px-2 py-1">{{ row.Curva }}</span>

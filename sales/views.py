@@ -1,6 +1,6 @@
 # sales/views.py
 from datetime import datetime
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.utils import timezone
 import pandas as pd
 from accounts.decorators import roles_required
@@ -9,9 +9,11 @@ from .models import NotaFiscal, Vendedor
 from .dashboard_services import gerar_metricas_e_graficos
 from .dashboard_services import gerar_analise_clientes
 
-@roles_required('ADMINISTRADOR', 'SUPERVISOR', 'VENDEDOR')
+@login_required
 def dashboard_vendas(request):
     user = request.user
+    if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS") and not user.is_superuser:
+        return redirect("dashboard_estoque")
     hoje = timezone.now().date()
 
     mes_selecionado = int(request.GET.get('mes', hoje.month))

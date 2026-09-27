@@ -315,12 +315,16 @@ def normalizar_nome(nome):
 
 def cadastrar_vendedores_hardness(nomes_vendedores):
     """
-    Garante que todos os nomes únicos vindos do Hardness existam na tabela Vendedor.
+    Garante que todos os nomes únicos vindos do Hardness existam na tabela Vendedor
+    e possuam conta de usuário atrelada (com senha padrão 'amm@2026').
     """
+    from .models import garantir_usuario_para_vendedor
+
     for nome in nomes_vendedores:
         nome_limpo = str(nome).strip().upper()
-        if nome_limpo and nome_limpo != "NAN":
+        if nome_limpo and nome_limpo not in ("NAN", "NONE", "DESCONHECIDO"):
             Vendedor.objects.get_or_create(nome_hardness=nome_limpo)
+            garantir_usuario_para_vendedor(nome_limpo, senha_padrao="amm@2026")
 
 
 def vincular_vendedores_piperun_automatico():

@@ -16,13 +16,16 @@ logger = logging.getLogger(__name__)
 # 1. Fecha conexões antigas do banco antes de cada execução
 @util.close_old_connections
 def tarefa_sync_hardness():
-    """Roda a sincronização rápida (último registro até hoje)."""
-    print("\n⏰ [Scheduler] Executando sync_hardness rápida...")
+    """Roda a sincronização rápida (último registro até hoje) de notas, estoque e itens."""
+    print("\n⏰ [Scheduler] Executando sync_hardness e sync_inventory rápida...")
     try:
-        # Chama sem argumentos -> cai na busca do último registro até hoje
         call_command("sync_hardness")
     except Exception as e:
-        print(f"❌ Erro no agendamento do Hardness: {e}")
+        print(f"❌ Erro no agendamento de notas do Hardness: {e}")
+    try:
+        call_command("sync_inventory")
+    except Exception as e:
+        print(f"❌ Erro no agendamento de estoque do Hardness: {e}")
 
 
 # 2. Fecha conexões antigas do banco antes de atualizar metas

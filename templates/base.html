@@ -9,7 +9,7 @@
     <!-- DataTables CSS (para a tabela analítica interativa) -->
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
     <!-- Plotly JS -->
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script charset="utf-8" src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
     <style>
         body { background-color: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         .navbar-brand { font-weight: 700; color: #1f77b4 !important; }
@@ -45,6 +45,11 @@
                             👥 Análise de Clientes
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link px-3 {% if request.resolver_match.url_name == 'dashboard_estoque' %}active{% endif %}" href="{% url 'dashboard_estoque' %}">
+                            📦 Estoque & Compras
+                        </a>
+                    </li>
                 </ul>
                 <div class="d-flex align-items-center gap-3">
                     <span class="text-muted small">👤 {{ request.user.username }}</span>
@@ -56,6 +61,14 @@
 
     <!-- Conteúdo Dinâmico -->
     <div class="container-fluid px-4">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags|default:'info' }}{% endif %} alert-dismissible fade show shadow-sm" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
         {% block content %}{% endblock %}
     </div>
 

@@ -1,0 +1,935 @@
+{% extends 'base.html' %}
+
+{% block title %}Estoque & Compras de EPIs - AMM{% endblock %}
+
+{% block extra_head %}
+<style>
+    .bg-purple { background-color: #7c3aed !important; color: #fff !important; }
+    .border-purple { border-color: #7c3aed !important; }
+    .text-purple { color: #7c3aed !important; }
+    .kpi-clickable { cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; text-decoration: none; display: block; }
+    .kpi-clickable:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.12); }
+    .nav-tabs .nav-link { font-weight: 600; color: #475569; border-radius: 8px 8px 0 0; padding: 10px 18px; }
+    .nav-tabs .nav-link.active { color: #1f77b4 !important; background-color: #fff; border-bottom: 3px solid #1f77b4; }
+    .btn-star { border: none; background: transparent; font-size: 1.15rem; line-height: 1; padding: 2px 6px; cursor: pointer; }
+    .btn-star:hover { transform: scale(1.2); }
+
+    /* Container com rolagem vertical/horizontal e cabeçalho congelado (Sticky Header) */
+    .table-matrix-scroll {
+        max-height: 68vh;
+        overflow-y: auto;
+        overflow-x: auto;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.4);
+    }
+    .table-matrix-scroll::-webkit-scrollbar {
+        width: 9px;
+        height: 9px;
+    }
+    .table-matrix-scroll::-webkit-scrollbar-track {
+        background: #f1f5f9;
+        border-radius: 8px;
+    }
+    .table-matrix-scroll::-webkit-scrollbar-thumb {
+        background: #94a3b8;
+        border-radius: 8px;
+    }
+    .table-matrix-scroll::-webkit-scrollbar-thumb:hover {
+        background: #64748b;
+    }
+    .table-matrix-scroll table.dataTable {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+        border-collapse: separate !important;
+        border-spacing: 0 !important;
+        font-size: 0.875rem;
+    }
+    .table-matrix-scroll table.dataTable > thead > tr > th,
+    #tabelaCompras thead th,
+    #tabelaRanking thead th,
+    #tabelaClienteProdutos thead th,
+    #tabelaParados thead th {
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 25 !important;
+        background-color: #0f172a !important;
+        color: #f8fafc !important;
+        font-size: 0.76rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+        padding: 11px 10px !important;
+        border-bottom: 2px solid #020617 !important;
+        border-right: 1px solid #334155;
+        box-shadow: 0 2px 4px rgba(15, 23, 42, 0.22);
+        vertical-align: middle;
+    }
+    .table-matrix-scroll table tbody td {
+        padding: 8px 10px !important;
+        border-bottom: 1px solid #e2e8f0;
+        vertical-align: middle;
+        background-color: #fff;
+    }
+    .table-matrix-scroll table tbody tr:hover td {
+        background-color: #f1f5f9 !important;
+    }
+
+    /* Colunas fixas à esquerda na Matriz de Compras (Estrela e SKU) */
+    #tabelaCompras thead th.sticky-col-1,
+    #tabelaCompras tbody td.sticky-col-1 {
+        position: sticky !important;
+        left: 0;
+        width: 40px;
+        min-width: 40px;
+    }
+    #tabelaCompras thead th.sticky-col-2,
+    #tabelaCompras tbody td.sticky-col-2 {
+        position: sticky !important;
+        left: 40px;
+        border-right: 2px solid #cbd5e1;
+    }
+    #tabelaCompras thead th.sticky-col-1,
+    #tabelaCompras thead th.sticky-col-2 {
+        z-index: 35 !important;
+        background-color: #0f172a !important;
+    }
+    #tabelaCompras tbody td.sticky-col-1,
+    #tabelaCompras tbody td.sticky-col-2 {
+        z-index: 10;
+        background-color: #ffffff;
+    }
+    #tabelaCompras tbody tr:hover td.sticky-col-1,
+    #tabelaCompras tbody tr:hover td.sticky-col-2 {
+        background-color: #e2e8f0 !important;
+    }
+
+    /* Destaques visuais de colunas */
+    .table-matrix-scroll table tbody td.col-estoque-destaque {
+        background-color: #f8fafc;
+        border-left: 1px solid #e2e8f0;
+        border-right: 1px solid #e2e8f0;
+    }
+    .table-matrix-scroll table tbody td.col-compra-ativa {
+        background-color: #fff1f2;
+    }
+    .col-produto-nome {
+        min-width: 230px;
+        max-width: 330px;
+        line-height: 1.25;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Cabeçalho e Ações Rápidas -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h2 class="fw-bold mb-0">📦 Inteligência de Estoque & Planejamento de Compras</h2>
+        <p class="text-muted mb-0 small">
+            Projeção de compras, controle de itens críticos e mínimos, detecção de itens esporádicos, excessos, produtos parados e cruzamento por cliente.
+        </p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <a href="{% url 'exportar_compras_csv' %}?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&marca={{ marca_selecionada }}&status={{ status_filtro }}&criticos={% if apenas_criticos %}1{% endif %}"
+           class="btn btn-success btn-sm d-flex align-items-center gap-1 shadow-sm">
+            📊 Exportar Plano de Compras (Excel)
+        </a>
+        <form method="post" action="{% url 'sincronizar_estoque_manual' %}" class="m-0">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <button type="submit" class="btn btn-outline-primary btn-sm d-flex align-items-center gap-1 shadow-sm"
+                    onclick="this.innerHTML='⏳ Sincronizando...'; this.classList.add('disabled');">
+                🔄 Atualizar Estoque
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- Barra Global de Parâmetros de Giro e Filtros -->
+<div class="card card-kpi bg-white p-3 mb-4">
+    <form method="get" id="formFiltrosEstoque" class="row g-2 align-items-end">
+        <input type="hidden" name="aba" id="inputAbaAtiva" value="{{ aba_ativa }}">
+        <input type="hidden" name="cliente" value="{{ cliente_selecionado }}">
+
+        <div class="col-md-2 col-sm-6">
+            <label class="form-label small fw-bold mb-1">📅 Base de Giro (Vendas):</label>
+            <select name="dias" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for val, label in opcoes_dias %}
+                    <option value="{{ val }}" {% if dias_analise == val %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-2 col-sm-6">
+            <label class="form-label small fw-bold mb-1" title="Quantos meses de venda você deseja manter em estoque?">
+                🎯 Meta de Cobertura:
+            </label>
+            <select name="cobertura" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for m in opcoes_cobertura %}
+                    <option value="{{ m }}" {% if cobertura_meses == m %}selected{% endif %}>{{ m }} {% if m == 1 %}mês{% else %}meses{% endif %} de estoque</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-2 col-sm-6">
+            <label class="form-label small fw-bold mb-1" title="Acima de quantos meses de cobertura o sistema deve alertar Excesso de Estoque?">
+                ⚠️ Alerta Acima do Necessário:
+            </label>
+            <select name="teto" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for t in opcoes_teto %}
+                    <option value="{{ t }}" {% if teto_meses == t %}selected{% endif %}>Acima de {{ t }} meses</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-2 col-sm-6">
+            <label class="form-label small fw-bold mb-1">🏷️ Marca / Fabricante:</label>
+            <select name="marca" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODAS" {% if marca_selecionada == 'TODAS' %}selected{% endif %}>Todas as Marcas</option>
+                {% for m in marcas_disponiveis %}
+                    <option value="{{ m }}" {% if marca_selecionada == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-2 col-sm-6">
+            <label class="form-label small fw-bold mb-1">🚦 Filtrar Status:</label>
+            <select name="status" id="selectStatusFiltro" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for st_val, st_label in opcoes_status %}
+                    <option value="{{ st_val }}" {% if status_filtro == st_val %}selected{% endif %}>{{ st_label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-2 col-sm-6 d-flex flex-column justify-content-end">
+            <div class="form-check mb-1">
+                <input class="form-check-input" type="checkbox" name="criticos" value="1" id="chkCriticos"
+                       {% if apenas_criticos %}checked{% endif %} onchange="this.form.submit()">
+                <label class="form-check-label small fw-bold text-danger" for="chkCriticos">
+                    ⭐ Apenas Críticos
+                </label>
+            </div>
+            {% if marca_selecionada != 'TODAS' or status_filtro != 'TODOS' or apenas_criticos %}
+                <a href="{% url 'dashboard_estoque' %}?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&aba={{ aba_ativa }}"
+                   class="btn btn-link btn-sm text-danger p-0 text-start">Limpar filtros</a>
+            {% endif %}
+        </div>
+    </form>
+</div>
+
+<!-- Cards de KPIs Executivos (Clicáveis para filtragem rápida) -->
+<div class="row g-3 mb-4">
+    <div class="{% if pode_ver_valores_financeiros %}col-xl-2{% else %}col-xl{% endif %} col-md-4 col-6">
+        <a href="?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&status=CRÍTICO+%2F+RUPTURA&aba=compras"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-danger border-4 h-100">
+            <span class="text-muted small fw-bold">🔴 Críticos / Em Ruptura</span>
+            <h3 class="fw-bold text-danger mb-0 mt-1">{{ kpis.qtd_criticos|default:"0" }} <small class="fs-6 fw-normal">SKUs</small></h3>
+            <small class="text-muted">Não podem faltar / Urgente</small>
+        </a>
+    </div>
+
+    <div class="{% if pode_ver_valores_financeiros %}col-xl-2{% else %}col-xl{% endif %} col-md-4 col-6">
+        <a href="?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&status=COMPRAR&aba=compras"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-warning border-4 h-100">
+            <span class="text-muted small fw-bold">🟠 Sugestão de Compra</span>
+            <h4 class="fw-bold text-dark mb-0 mt-1">{{ kpis.qtd_comprar|default:"0" }} <small class="fs-6 fw-normal">SKUs</small></h4>
+            {% if pode_ver_valores_financeiros %}
+                <small class="text-warning-emphasis fw-bold">{{ kpis.valor_total_compra|default:"R$ 0,00" }} ({{ kpis.qtd_unidades_comprar|default:"0" }} un)</small>
+            {% else %}
+                <small class="text-warning-emphasis fw-bold">{{ kpis.qtd_unidades_comprar|default:"0" }} un. para repor</small>
+            {% endif %}
+        </a>
+    </div>
+
+    <div class="{% if pode_ver_valores_financeiros %}col-xl-2{% else %}col-xl{% endif %} col-md-4 col-6">
+        <a href="?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&status=ACIMA+DO+NECESSÁRIO&aba=parados"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-info border-4 h-100">
+            <span class="text-muted small fw-bold">🔵 Acima do Necessário</span>
+            <h4 class="fw-bold text-info mb-0 mt-1">{{ kpis.qtd_excesso|default:"0" }} <small class="fs-6 fw-normal">SKUs</small></h4>
+            {% if pode_ver_valores_financeiros %}
+                <small class="text-muted">Excesso (&gt;{{ teto_meses }}M): <strong>{{ kpis.valor_excesso|default:"R$ 0,00" }}</strong></small>
+            {% else %}
+                <small class="text-muted">Excesso (&gt;{{ teto_meses }}M): <strong>{{ kpis.unidades_excesso|default:"0" }} un</strong></small>
+            {% endif %}
+        </a>
+    </div>
+
+    <div class="{% if pode_ver_valores_financeiros %}col-xl-2{% else %}col-xl{% endif %} col-md-4 col-6">
+        <a href="?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&status=PARADO+%28SEM+GIRO%29&aba=parados"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-secondary border-4 h-100">
+            <span class="text-muted small fw-bold">⚫ Produtos Parados ({{ dias_analise }}d)</span>
+            <h4 class="fw-bold text-secondary mb-0 mt-1">{{ kpis.qtd_parados|default:"0" }} <small class="fs-6 fw-normal">SKUs</small></h4>
+            {% if pode_ver_valores_financeiros %}
+                <small class="text-muted">Empatado: <strong>{{ kpis.valor_parado|default:"R$ 0,00" }}</strong></small>
+            {% else %}
+                <small class="text-muted">Saldo parado: <strong>{{ kpis.unidades_paradas|default:"0" }} un</strong></small>
+            {% endif %}
+        </a>
+    </div>
+
+    <div class="{% if pode_ver_valores_financeiros %}col-xl-2{% else %}col-xl{% endif %} col-md-4 col-6">
+        <a href="?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&status=ESPORÁDICO&aba=compras"
+           class="card card-kpi kpi-clickable p-3 bg-white border-start border-purple border-4 h-100">
+            <span class="text-muted small fw-bold">🟣 Itens Esporádicos</span>
+            <h3 class="fw-bold text-purple mb-0 mt-1">{{ kpis.qtd_esporadicos|default:"0" }} <small class="fs-6 fw-normal">SKUs</small></h3>
+            <small class="text-muted">Venda pontual (sob demanda)</small>
+        </a>
+    </div>
+
+    {% if pode_ver_valores_financeiros %}
+    <div class="col-xl-2 col-md-4 col-6">
+        <div class="card card-kpi p-3 bg-white border-start border-success border-4 h-100">
+            <span class="text-muted small fw-bold">💰 Valor Total em Estoque</span>
+            <h5 class="fw-bold text-success mb-0 mt-1">{{ kpis.valor_total_estoque|default:"R$ 0,00" }}</h5>
+            <small class="text-muted">{{ kpis.unidades_total_estoque|default:"0" }} un ({{ kpis.skus_com_estoque|default:"0" }} SKUs c/ saldo)</small>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Navegação em Abas -->
+<ul class="nav nav-tabs mb-3" id="estoqueTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'compras' %}active{% endif %}" id="tab-compras-btn"
+                data-bs-toggle="tab" data-bs-target="#pane-compras" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='compras'">
+            🛒 Projeção de Compras & Itens Críticos
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'ranking' %}active{% endif %}" id="tab-ranking-btn"
+                data-bs-toggle="tab" data-bs-target="#pane-ranking" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='ranking'">
+            🏆 Ranking Mais Vendidos ({% if pode_ver_valores_financeiros %}Qtd & R${% else %}Quantidade{% endif %})
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'clientes' %}active{% endif %}" id="tab-clientes-btn"
+                data-bs-toggle="tab" data-bs-target="#pane-clientes" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='clientes'">
+            🤝 Produtos por Cliente x Estoque
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'parados' %}active{% endif %}" id="tab-parados-btn"
+                data-bs-toggle="tab" data-bs-target="#pane-parados" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='parados'">
+            ❄️ Produtos Parados & Excesso ({{ kpis.qtd_parados|add:kpis.qtd_excesso }})
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content" id="estoqueTabsContent">
+
+    <!-- ========================================================================= -->
+    <!-- ABA 1: PROJEÇÃO DE COMPRAS, MÍNIMOS E ITENS CRÍTICOS                      -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'compras' %}show active{% endif %}" id="pane-compras" role="tabpanel">
+        <div class="row g-3 mb-4">
+            <div class="col-lg-5">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if graficos.saude_estoque %}
+                        {{ graficos.saude_estoque|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem dados para diagnóstico.</div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="col-lg-7">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if graficos.top_compras %}
+                        {{ graficos.top_compras|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Nenhum item com necessidade de compra para os filtros selecionados.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="card card-kpi bg-white p-4 mb-5">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                <div>
+                    <h4 class="fw-bold mb-0">📋 Matriz de Planejamento de Compras e Controle de Mínimos</h4>
+                    <small class="text-muted">
+                        Clique em <strong>⭐</strong> para fixar um produto como <strong>Crítico (não pode faltar)</strong> ou em <strong>⚙️ Mín</strong> para definir o Estoque Mínimo de Segurança.
+                        Itens com badge <span class="badge bg-warning-subtle text-dark border">Sugerido Crítico</span> são Curva A de venda recorrente.
+                    </small>
+                </div>
+            </div>
+
+            <div>
+                <table id="tabelaCompras" class="table table-hover align-middle w-100">
+                    <thead>
+                        <tr>
+                            <th class="text-center sticky-col-1" title="Marcar como Crítico (Não pode faltar)">⭐</th>
+                            <th class="sticky-col-2">Código (SKU)</th>
+                            <th>Produto</th>
+                            <th>Marca</th>
+                            <th class="text-center">Giro / Demanda</th>
+                            <th class="text-end">Vendas ({{ dias_analise }}d)</th>
+                            <th class="text-end">Média / Mês</th>
+                            <th class="text-center" title="Inclinação linear da demanda mês a mês (+ subindo / - caindo)">Tendência</th>
+                            <th class="text-end">Estoque Atual</th>
+                            <th class="text-end" title="Quantidade em Ordem de Compra (OC) em andamento">Em Compra</th>
+                            <th class="text-center">Mínimo</th>
+                            <th class="text-end" title="Meta projetada linearmente para {{ cobertura_meses }} mês(es)">Meta ({{ cobertura_meses }}M)</th>
+                            <th class="text-center">Cobertura</th>
+                            <th class="text-center">Status</th>
+                            <th class="text-end">Sugestão Compra</th>
+                            {% if pode_ver_valores_financeiros %}
+                            <th class="text-end">Custo Est. (R$)</th>
+                            {% endif %}
+                            <th class="text-center">Ajustar</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in tabela_compras %}
+                        <tr>
+                            <td class="text-center sticky-col-1" data-order="{% if r.item_critico %}2{% elif r.Sugestao_Critico %}1{% else %}0{% endif %}">
+                                <button type="button" class="btn-star"
+                                        onclick="toggleCritico('{{ r.codigo_produto|escapejs }}', '{{ r.nome|escapejs }}', '{{ r.marca|escapejs }}', {{ r.Vendas_Media_Mes|floatformat:0 }})"
+                                        title="{% if r.item_critico %}Item Crítico Fixado (Clique p/ remover){% else %}Marcar como Item Crítico (Não pode faltar){% endif %}">
+                                    {% if r.item_critico %}⭐{% else %}☆{% endif %}
+                                </button>
+                            </td>
+                            <td class="fw-bold text-nowrap sticky-col-2">
+                                {{ r.codigo_produto }}
+                                {% if r.ca__numero_ca and r.ca__numero_ca != '-' %}
+                                    <br><small class="text-muted fw-normal">CA {{ r.ca__numero_ca }}</small>
+                                {% endif %}
+                            </td>
+                            <td class="col-produto-nome">
+                                <span class="fw-semibold">{{ r.nome }}</span>
+                                {% if r.item_critico %}
+                                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle ms-1">Crítico</span>
+                                {% elif r.Sugestao_Critico %}
+                                    <span class="badge bg-warning-subtle text-dark border border-warning-subtle ms-1" title="Alta recorrência / Curva A: recomendado definir estoque mínimo">Sugerido Crítico</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-nowrap"><small class="fw-semibold text-secondary">{{ r.marca }}</small></td>
+                            <td class="text-center text-nowrap">
+                                {% if r.Padrao_Demanda == 'Recorrente' %}
+                                    <span class="badge bg-success-subtle text-success border">Recorrente ({{ r.Num_Pedidos }} NF / {{ r.Num_Clientes }} cli)</span>
+                                {% elif r.Padrao_Demanda == 'Esporádico' %}
+                                    <span class="badge bg-purple" title="Vendido em poucos pedidos pontuais. Avalie antes de estocar.">Esporádico ({{ r.Num_Pedidos }} NF / {{ r.Num_Clientes }} cli)</span>
+                                {% else %}
+                                    <span class="badge bg-light text-muted border">Sem Giro ({{ dias_analise }}d)</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end fw-bold text-nowrap" data-order="{{ r.Qtd_Vendida|stringformat:'.2f' }}">
+                                {{ r.Qtd_Vendida|floatformat:0 }} <small class="text-muted fw-normal">{{ r.unidade_medida }}</small>
+                            </td>
+                            <td class="text-end text-nowrap" data-order="{{ r.Vendas_Media_Mes|stringformat:'.2f' }}">
+                                {{ r.Vendas_Media_Mes|floatformat:1 }}
+                            </td>
+                            <td class="text-center text-nowrap" data-order="{{ r.Tendencia_Mes|stringformat:'.2f' }}"
+                                title="Evolução mensal: {{ r.Historico_Mensal_Str }} → Próx. mês projetado: {{ r.Demanda_Prox_Mes|floatformat:1 }} un">
+                                {% if r.Qtd_Vendida <= 0 %}
+                                    <span class="text-muted">-</span>
+                                {% elif r.Tendencia_Mes > 0.05 %}
+                                    <span class="text-success fw-bold">+{{ r.Tendencia_Mes|floatformat:1 }}/mês</span>
+                                {% elif r.Tendencia_Mes < -0.05 %}
+                                    <span class="text-danger fw-semibold">{{ r.Tendencia_Mes|floatformat:1 }}/mês</span>
+                                {% else %}
+                                    <span class="text-muted">0,0/mês</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end fw-bold text-nowrap col-estoque-destaque {% if r.estoque_atual <= 0 %}text-danger{% elif r.estoque_atual <= r.estoque_minimo and r.estoque_minimo > 0 %}text-warning-emphasis{% else %}text-dark{% endif %}"
+                                data-order="{{ r.estoque_atual }}">
+                                {{ r.estoque_atual }}
+                            </td>
+                            <td class="text-end text-nowrap {% if r.qtd_ordem_compra > 0 %}fw-bold text-primary{% else %}text-muted{% endif %}"
+                                data-order="{{ r.qtd_ordem_compra }}">
+                                {{ r.qtd_ordem_compra }}
+                            </td>
+                            <td class="text-center text-nowrap" data-order="{{ r.estoque_minimo }}">
+                                {% if r.estoque_minimo > 0 %}
+                                    <span class="badge bg-dark">{{ r.estoque_minimo }}</span>
+                                {% else %}
+                                    <span class="text-muted">-</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end text-nowrap" data-order="{{ r.Meta_Estoque }}"
+                                title="Projeção linear p/ {{ cobertura_meses }}M: {{ r.Projecao_Cobertura }} un ({{ r.Historico_Mensal_Str }})">
+                                {{ r.Meta_Estoque }}
+                            </td>
+                            <td class="text-center text-nowrap" data-order="{{ r.Cobertura_Meses|stringformat:'.2f' }}">
+                                {% if r.Qtd_Vendida <= 0 and r.estoque_atual > 0 %}
+                                    <span class="text-secondary small">∞ (S/ Giro)</span>
+                                {% else %}
+                                    {{ r.Cobertura_Meses|floatformat:1 }} m
+                                {% endif %}
+                            </td>
+                            <td class="text-center text-nowrap" data-order="{{ r.Ordem_Status }}">
+                                <span class="badge {{ r.Badge_Class }}">{{ r.Status }}</span>
+                            </td>
+                            <td class="text-end fw-bold text-nowrap {% if r.Qtd_Sugerida_Compra > 0 %}text-danger col-compra-ativa{% else %}text-muted{% endif %}"
+                                data-order="{{ r.Qtd_Sugerida_Compra }}">
+                                {% if r.Qtd_Sugerida_Compra > 0 %}
+                                    +{{ r.Qtd_Sugerida_Compra }} {{ r.unidade_medida }}
+                                {% elif r.Qtd_Excesso > 0 %}
+                                    <span class="text-info small" title="Unidades acima do teto configurado">Excesso: {{ r.Qtd_Excesso }}</span>
+                                {% else %}
+                                    0
+                                {% endif %}
+                            </td>
+                            {% if pode_ver_valores_financeiros %}
+                            <td class="text-end fw-semibold text-nowrap" data-order="{{ r.Valor_Compra_Estimado|stringformat:'.2f' }}">
+                                {% if r.Valor_Compra_Estimado > 0 %}
+                                    R$ {{ r.Valor_Compra_Estimado|floatformat:2 }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                            {% endif %}
+                            <td class="text-center text-nowrap">
+                                <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2 text-nowrap"
+                                        onclick="abrirModalParametros('{{ r.codigo_produto|escapejs }}', '{{ r.nome|escapejs }}', '{{ r.marca|escapejs }}', {{ r.estoque_minimo }}, {{ r.estoque_maximo }}, {{ r.item_critico|yesno:'true,false' }}, {{ r.Vendas_Media_Mes|floatformat:0 }})">
+                                    ⚙️ Mín
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- ABA 2: RANKING DE PRODUTOS QUE MAIS VENDEM                                -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'ranking' %}show active{% endif %}" id="pane-ranking" role="tabpanel">
+        <div class="row g-3 mb-4">
+            {% if pode_ver_valores_financeiros %}
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if graficos.ranking_faturamento %}
+                        {{ graficos.ranking_faturamento|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem vendas no período.</div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if graficos.ranking_quantidade %}
+                        {{ graficos.ranking_quantidade|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem vendas no período.</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% else %}
+            <div class="col-lg-12">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if graficos.ranking_quantidade %}
+                        {{ graficos.ranking_quantidade|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem vendas no período.</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="card card-kpi bg-white p-4 mb-5">
+            <h4 class="fw-bold mb-1">🏆 Ranking Completo de Produtos Mais Vendidos (Curva ABC)</h4>
+            <p class="text-muted small mb-3">
+                Ordene clicando nas colunas e confira ao lado a saúde do estoque de cada campeão de vendas.
+            </p>
+            <div>
+                <table id="tabelaRanking" class="table table-hover align-middle w-100">
+                    <thead>
+                        <tr>
+                            <th class="text-center">#</th>
+                            <th class="text-center">Curva</th>
+                            <th>Código (SKU)</th>
+                            <th>Produto</th>
+                            <th>Marca</th>
+                            <th class="text-end">Qtd Vendida ({{ dias_analise }}d)</th>
+                            {% if pode_ver_valores_financeiros %}
+                            <th class="text-end">Faturamento (R$)</th>
+                            <th class="text-end">% Fat.</th>
+                            {% endif %}
+                            <th class="text-center">Nº Pedidos</th>
+                            <th class="text-center">Clientes</th>
+                            {% if pode_ver_valores_financeiros %}
+                            <th class="text-end">Preço Médio</th>
+                            {% endif %}
+                            <th class="text-end">Estoque Atual</th>
+                            <th class="text-center">Status do Estoque</th>
+                            <th class="text-end">Sugestão Compra</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in tabela_ranking %}
+                        <tr>
+                            <td class="text-center fw-bold text-nowrap">
+                                {% if pode_ver_valores_financeiros %}{{ r.Posicao_Fat }}º{% else %}{{ r.Posicao_Qtd }}º{% endif %}
+                            </td>
+                            <td class="text-center text-nowrap">
+                                <span class="badge {% if r.Curva_ABC == 'A' %}bg-success{% elif r.Curva_ABC == 'B' %}bg-primary{% else %}bg-secondary{% endif %}">
+                                    Curva {{ r.Curva_ABC }}
+                                </span>
+                            </td>
+                            <td class="fw-bold text-nowrap">{{ r.codigo_produto }}</td>
+                            <td class="col-produto-nome">
+                                {{ r.nome }}
+                                {% if r.item_critico %}<span title="Item Crítico">⭐</span>{% endif %}
+                            </td>
+                            <td class="text-nowrap"><small>{{ r.marca }}</small></td>
+                            <td class="text-end fw-bold text-primary text-nowrap" data-order="{{ r.Qtd_Vendida|stringformat:'.2f' }}">
+                                {{ r.Qtd_Vendida|floatformat:0 }} <small class="text-muted fw-normal">{{ r.unidade_medida }}</small>
+                            </td>
+                            {% if pode_ver_valores_financeiros %}
+                            <td class="text-end fw-bold text-success text-nowrap" data-order="{{ r.Faturamento_Periodo|stringformat:'.2f' }}">
+                                R$ {{ r.Faturamento_Periodo|floatformat:2 }}
+                            </td>
+                            <td class="text-end text-nowrap" data-order="{{ r.Pct_Faturamento|stringformat:'.4f' }}">{{ r.Pct_Faturamento|floatformat:2 }}%</td>
+                            {% endif %}
+                            <td class="text-center text-nowrap">{{ r.Num_Pedidos }}</td>
+                            <td class="text-center text-nowrap">{{ r.Num_Clientes }}</td>
+                            {% if pode_ver_valores_financeiros %}
+                            <td class="text-end text-nowrap">R$ {{ r.Preco_Medio_Venda|floatformat:2 }}</td>
+                            {% endif %}
+                            <td class="text-end fw-bold text-nowrap col-estoque-destaque" data-order="{{ r.estoque_atual }}">{{ r.estoque_atual }}</td>
+                            <td class="text-center text-nowrap"><span class="badge {{ r.Badge_Class }}">{{ r.Status }}</span></td>
+                            <td class="text-end fw-bold text-nowrap {% if r.Qtd_Sugerida_Compra > 0 %}text-danger col-compra-ativa{% else %}text-muted{% endif %}"
+                                data-order="{{ r.Qtd_Sugerida_Compra }}">
+                                {% if r.Qtd_Sugerida_Compra > 0 %}+{{ r.Qtd_Sugerida_Compra }}{% else %}-{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- ABA 3: PRODUTOS QUE CADA CLIENTE COMPRA X COMO ESTOQUE AO LADO            -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'clientes' %}show active{% endif %}" id="pane-clientes" role="tabpanel">
+        <div class="card card-kpi bg-white p-4 mb-4">
+            <form method="get" class="row g-3 align-items-end">
+                <input type="hidden" name="aba" value="clientes">
+                <input type="hidden" name="dias" value="{{ dias_analise }}">
+                <input type="hidden" name="cobertura" value="{{ cobertura_meses }}">
+                <input type="hidden" name="teto" value="{{ teto_meses }}">
+
+                <div class="col-md-7">
+                    <label class="form-label fw-bold">🏢 Selecione o Cliente para ver o Mix de Produtos Comprados vs. Nosso Estoque:</label>
+                    <select name="cliente" class="form-select" onchange="this.form.submit()">
+                        {% for cli in clientes_disponiveis %}
+                            <option value="{{ cli }}" {% if cli == cliente_selecionado %}selected{% endif %}>{{ cli }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-5">
+                    {% if resumo_cliente %}
+                    <div class="d-flex flex-wrap gap-3 justify-content-md-end">
+                        <div class="border rounded px-3 py-2 bg-light">
+                            <small class="text-muted d-block">SKUs que compra</small>
+                            <strong class="fs-5">{{ resumo_cliente.total_skus_comprados }}</strong>
+                        </div>
+                        {% if pode_ver_valores_financeiros %}
+                        <div class="border rounded px-3 py-2 bg-light">
+                            <small class="text-muted d-block">Compras no Histórico</small>
+                            <strong class="fs-5 text-success">{{ resumo_cliente.faturamento_total }}</strong>
+                        </div>
+                        {% else %}
+                        <div class="border rounded px-3 py-2 bg-light">
+                            <small class="text-muted d-block">Total Comprado</small>
+                            <strong class="fs-5 text-primary">{{ resumo_cliente.qtd_total_comprada }} un</strong>
+                        </div>
+                        {% endif %}
+                        <div class="border rounded px-3 py-2 {% if resumo_cliente.itens_em_risco_estoque > 0 %}bg-danger-subtle border-danger{% else %}bg-success-subtle{% endif %}">
+                            <small class="text-muted d-block">Itens em Alerta de Estoque</small>
+                            <strong class="fs-5 text-danger">{{ resumo_cliente.itens_em_risco_estoque }} SKUs</strong>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </form>
+        </div>
+
+        <div class="card card-kpi bg-white p-4 mb-5">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                    <h4 class="fw-bold mb-0">🤝 Produtos Comprados por: <span class="text-primary">{{ cliente_selecionado }}</span></h4>
+                    <small class="text-muted">
+                        Vendedor(a) de referência: <strong>{{ resumo_cliente.vendedor|default:"-" }}</strong> |
+                        As colunas sombreadas à direita mostram como está o nosso estoque hoje para atender a este cliente.
+                    </small>
+                </div>
+            </div>
+
+            <div>
+                <table id="tabelaClienteProdutos" class="table table-hover align-middle w-100">
+                    <thead>
+                        <tr>
+                            <th>Código (SKU)</th>
+                            <th>Produto</th>
+                            <th>Marca</th>
+                            <th class="text-end">Qtd Total Comprada</th>
+                            <th class="text-center">Nº Pedidos</th>
+                            <th class="text-end">Qtd Média / Pedido</th>
+                            {% if pode_ver_valores_financeiros %}
+                            <th class="text-end">Último Preço</th>
+                            {% endif %}
+                            <th class="text-center">Última Compra</th>
+                            {% if pode_ver_valores_financeiros %}
+                            <th class="text-end">Fat. no Cliente</th>
+                            {% endif %}
+                            <th class="text-end border-start">Estoque Atual AMM</th>
+                            <th class="text-end">Em Compra</th>
+                            <th class="text-center">Estoque Mín.</th>
+                            <th class="text-center">Cobre Pedido Médio?</th>
+                            <th class="text-center">Status no Estoque</th>
+                            <th class="text-end">Sugestão Compra</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in tabela_cliente_produtos %}
+                        <tr>
+                            <td class="fw-bold text-nowrap">{{ r.codigo_produto }}</td>
+                            <td class="col-produto-nome">
+                                {{ r.nome }}
+                                {% if r.item_critico %}<span title="Item Crítico">⭐</span>{% endif %}
+                            </td>
+                            <td class="text-nowrap"><small>{{ r.marca }}</small></td>
+                            <td class="text-end fw-bold text-nowrap" data-order="{{ r.Qtd_Total_Cliente|stringformat:'.2f' }}">
+                                {{ r.Qtd_Total_Cliente|floatformat:0 }} <small class="text-muted fw-normal">{{ r.unidade_medida }}</small>
+                            </td>
+                            <td class="text-center text-nowrap">{{ r.Pedidos_Cliente }}</td>
+                            <td class="text-end text-nowrap" data-order="{{ r.Qtd_Media_Por_Pedido|stringformat:'.2f' }}">{{ r.Qtd_Media_Por_Pedido|floatformat:1 }}</td>
+                            {% if pode_ver_valores_financeiros %}
+                            <td class="text-end text-nowrap">R$ {{ r.Ultimo_Preco_Cliente|floatformat:2 }}</td>
+                            {% endif %}
+                            <td class="text-center text-nowrap" data-order="{{ r.Dias_Ultima_Compra }}">
+                                {{ r.Ultima_Compra_Str }}
+                                <br><small class="text-muted">há {{ r.Dias_Ultima_Compra }}d</small>
+                            </td>
+                            {% if pode_ver_valores_financeiros %}
+                            <td class="text-end fw-bold text-success text-nowrap" data-order="{{ r.Fat_Total_Cliente|stringformat:'.2f' }}">
+                                R$ {{ r.Fat_Total_Cliente|floatformat:2 }}
+                            </td>
+                            {% endif %}
+                            <td class="text-end fw-bold text-nowrap col-estoque-destaque border-start {% if r.estoque_atual <= 0 %}text-danger{% endif %}"
+                                data-order="{{ r.estoque_atual }}">
+                                {{ r.estoque_atual }} {{ r.unidade_medida }}
+                            </td>
+                            <td class="text-end text-nowrap col-estoque-destaque {% if r.qtd_ordem_compra > 0 %}fw-bold text-primary{% else %}text-muted{% endif %}"
+                                data-order="{{ r.qtd_ordem_compra }}">
+                                {{ r.qtd_ordem_compra }}
+                            </td>
+                            <td class="text-center text-nowrap col-estoque-destaque">{{ r.estoque_minimo }}</td>
+                            <td class="text-center text-nowrap col-estoque-destaque">
+                                {% if r.Atende_Pedido_Medio %}
+                                    <span class="badge bg-success-subtle text-success border">✅ Sim</span>
+                                {% else %}
+                                    <span class="badge bg-danger-subtle text-danger border">⚠️ Insuficiente</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-center text-nowrap col-estoque-destaque">
+                                <span class="badge {{ r.Badge_Class }}">{{ r.Status }}</span>
+                            </td>
+                            <td class="text-end fw-bold text-nowrap col-estoque-destaque {% if r.Qtd_Sugerida_Compra > 0 %}text-danger col-compra-ativa{% else %}text-muted{% endif %}"
+                                data-order="{{ r.Qtd_Sugerida_Compra }}">
+                                {% if r.Qtd_Sugerida_Compra > 0 %}+{{ r.Qtd_Sugerida_Compra }}{% else %}-{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- ABA 4: PRODUTOS PARADOS E ESTOQUE ACIMA DO NECESSÁRIO                     -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'parados' %}show active{% endif %}" id="pane-parados" role="tabpanel">
+        <div class="card card-kpi bg-white p-4 mb-5">
+            <h4 class="fw-bold mb-1">❄️ Diagnóstico de Produtos Parados (Sem Giro) e Estoque Acima do Necessário</h4>
+            <p class="text-muted small mb-3">
+                Esta visão destaca itens com <strong>0 vendas nos últimos {{ dias_analise }} dias</strong> que possuem saldo positivo no galpão, além de itens cujo estoque atual supera o teto de <strong>{{ teto_meses }} meses</strong> de cobertura.
+            </p>
+            <div>
+                <table id="tabelaParados" class="table table-hover align-middle w-100">
+                    <thead>
+                        <tr>
+                            <th>Código (SKU)</th>
+                            <th>Produto</th>
+                            <th>Marca</th>
+                            <th class="text-center">Diagnóstico</th>
+                            <th class="text-end">Vendas ({{ dias_analise }}d)</th>
+                            <th class="text-end">Média / Mês</th>
+                            <th class="text-end">Estoque Atual</th>
+                            <th class="text-end">Teto Ideal ({{ teto_meses }}M)</th>
+                            <th class="text-end">Qtd Parada / Excesso</th>
+                            {% if pode_ver_valores_financeiros %}
+                            <th class="text-end">Custo Unit. Ref.</th>
+                            <th class="text-end">Capital Empatado (R$)</th>
+                            {% endif %}
+                            <th class="text-center">Última Venda</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in tabela_parados %}
+                        <tr>
+                            <td class="fw-bold text-nowrap">{{ r.codigo_produto }}</td>
+                            <td class="col-produto-nome">{{ r.nome }}</td>
+                            <td class="text-nowrap"><small>{{ r.marca }}</small></td>
+                            <td class="text-center text-nowrap"><span class="badge {{ r.Badge_Class }}">{{ r.Status }}</span></td>
+                            <td class="text-end text-nowrap" data-order="{{ r.Qtd_Vendida|stringformat:'.2f' }}">{{ r.Qtd_Vendida|floatformat:0 }}</td>
+                            <td class="text-end text-nowrap" data-order="{{ r.Vendas_Media_Mes|stringformat:'.2f' }}">{{ r.Vendas_Media_Mes|floatformat:1 }}</td>
+                            <td class="text-end fw-bold text-nowrap col-estoque-destaque" data-order="{{ r.estoque_atual }}">
+                                {{ r.estoque_atual }} {{ r.unidade_medida }}
+                            </td>
+                            <td class="text-end text-nowrap" data-order="{{ r.Teto_Estoque }}">
+                                {% if r.Qtd_Vendida > 0 %}{{ r.Teto_Estoque }}{% else %}0{% endif %}
+                            </td>
+                            <td class="text-end fw-bold text-info text-nowrap" data-order="{{ r.Qtd_Excesso }}">
+                                {{ r.Qtd_Excesso }} {{ r.unidade_medida }}
+                            </td>
+                            {% if pode_ver_valores_financeiros %}
+                            <td class="text-end text-nowrap">R$ {{ r.Custo_Ref|floatformat:2 }}</td>
+                            <td class="text-end fw-bold text-danger text-nowrap" data-order="{{ r.Valor_Estoque_Custo|stringformat:'.2f' }}">
+                                R$ {{ r.Valor_Estoque_Custo|floatformat:2 }}
+                            </td>
+                            {% endif %}
+                            <td class="text-center text-nowrap" data-order="{{ r.Dias_Sem_Vender }}">
+                                {{ r.Ultima_Venda_Str }}
+                                {% if r.Dias_Sem_Vender < 999 %}
+                                    <br><small class="text-muted">({{ r.Dias_Sem_Vender }}d atrás)</small>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- Modal para Configurar Estoque Mínimo, Máximo e Flag de Item Crítico -->
+<div class="modal fade" id="modalParametrosProduto" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <form method="post" action="{% url 'atualizar_parametros_produto' %}">
+                {% csrf_token %}
+                <input type="hidden" name="acao" value="salvar_modal">
+                <input type="hidden" name="sku" id="modalInputSku">
+                <input type="hidden" name="nome" id="modalInputNome">
+                <input type="hidden" name="marca" id="modalInputMarca">
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold">⚙️ Parâmetros de Estoque & Criticidade</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3 p-2 bg-light rounded border">
+                        <small class="text-muted d-block">Produto Selecionado:</small>
+                        <strong id="modalLabelProduto"></strong>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" name="item_critico" id="modalChkCritico">
+                        <label class="form-check-label fw-bold text-danger" for="modalChkCritico">
+                            ⭐ Produto Crítico (Não pode faltar no estoque)
+                        </label>
+                        <div class="form-text">
+                            Itens críticos disparam alerta imediato de compra mesmo se a demanda for baixa ou pontual.
+                        </div>
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Estoque Mínimo de Segurança:</label>
+                            <input type="number" min="0" class="form-control" name="estoque_minimo" id="modalInputMinimo" required>
+                            <small class="text-muted" id="modalDicaMedia"></small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Estoque Máximo (Opcional):</label>
+                            <input type="number" min="0" class="form-control" name="estoque_maximo" id="modalInputMaximo">
+                            <small class="text-muted">Deixe 0 para usar o teto automático ({{ teto_meses }}M).</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary fw-bold">💾 Salvar Parâmetros</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<!-- Formulário compartilhado para alternar estrela de Item Crítico -->
+<form method="post" action="{% url 'atualizar_parametros_produto' %}" id="formToggleCritico" class="d-none">
+    {% csrf_token %}
+    <input type="hidden" name="acao" value="toggle_critico">
+    <input type="hidden" name="sku" id="toggleInputSku">
+    <input type="hidden" name="nome" id="toggleInputNome">
+    <input type="hidden" name="marca" id="toggleInputMarca">
+    <input type="hidden" name="sugestao_minimo" id="toggleInputMinimo">
+    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function toggleCritico(sku, nome, marca, sugestaoMinimo) {
+        document.getElementById('toggleInputSku').value = sku;
+        document.getElementById('toggleInputNome').value = nome;
+        document.getElementById('toggleInputMarca').value = marca;
+        document.getElementById('toggleInputMinimo').value = sugestaoMinimo;
+        document.getElementById('formToggleCritico').submit();
+    }
+
+    function abrirModalParametros(sku, nome, marca, minimo, maximo, critico, mediaMes) {
+        document.getElementById('modalInputSku').value = sku;
+        document.getElementById('modalInputNome').value = nome;
+        document.getElementById('modalInputMarca').value = marca;
+        document.getElementById('modalLabelProduto').textContent = sku + ' - ' + nome;
+        document.getElementById('modalInputMinimo').value = minimo;
+        document.getElementById('modalInputMaximo').value = maximo;
+        document.getElementById('modalChkCritico').checked = critico;
+        document.getElementById('modalDicaMedia').textContent = 'Giro médio atual: ~' + mediaMes + ' un/mês';
+
+        var modal = new bootstrap.Modal(document.getElementById('modalParametrosProduto'));
+        modal.show();
+    }
+
+    $(document).ready(function() {
+        var dtConfig = {
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json'
+            },
+            dom: "<'row mb-2 align-items-center'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                 "<'table-matrix-scroll'tr>" +
+                 "<'row mt-3 align-items-center'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+            lengthMenu: [[25, 50, 100, 250, -1], [25, 50, 100, 250, "Todos"]],
+            pageLength: 50,
+            order: []
+        };
+
+        $('#tabelaCompras').DataTable(dtConfig);
+        $('#tabelaRanking').DataTable(dtConfig);
+        $('#tabelaClienteProdutos').DataTable(dtConfig);
+        $('#tabelaParados').DataTable(dtConfig);
+
+        // Redimensiona gráficos Plotly quando o usuário troca de aba Bootstrap
+        $('button[data-bs-toggle="tab"]').on('shown.bs.tab', function () {
+            window.dispatchEvent(new Event('resize'));
+        });
+    });
+</script>
+{% endblock %}

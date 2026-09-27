@@ -89,13 +89,18 @@ class ProdutoEPI(models.Model):
     UNIDADE_MEDIDA_CHOICES = [
         ("UN", "Unidade"),
         ("PAR", "Par"),
+        ("PC", "Peça"),
         ("CJ", "Conjunto"),
         ("CX", "Caixa"),
         ("PCT", "Pacote"),
+        ("RL", "Rolo"),
+        ("KG", "Quilograma"),
+        ("MT", "Metro"),
     ]
 
-    sku = models.CharField(max_length=50, unique=True, verbose_name="SKU / Código Interno")
-    nome = models.CharField(max_length=200, verbose_name="Nome do Produto")
+    sku = models.CharField(max_length=50, unique=True, db_index=True, verbose_name="SKU / Código Interno")
+    nome = models.CharField(max_length=255, verbose_name="Nome do Produto")
+    marca = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Marca / Fabricante")
     categoria = models.ForeignKey(
         Categoria, 
         on_delete=models.PROTECT, 
@@ -104,7 +109,9 @@ class ProdutoEPI(models.Model):
     )
     ca = models.ForeignKey(
         CertificadoAprovacao, 
-        on_delete=models.PROTECT, 
+        on_delete=models.SET_NULL, 
+        blank=True,
+        null=True,
         related_name="produtos", 
         verbose_name="Certificado de Aprovação (CA)"
     )
@@ -115,20 +122,28 @@ class ProdutoEPI(models.Model):
         verbose_name="Tamanho / Variação (ex: G, 42, Único)"
     )
     unidade_medida = models.CharField(
-        max_length=5, 
+        max_length=10, 
         choices=UNIDADE_MEDIDA_CHOICES, 
         default="UN", 
         verbose_name="Unidade de Medida"
     )
     
     # Preços
-    preco_custo = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"), verbose_name="Preço de Custo")
-    preco_venda = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"), verbose_name="Preço de Venda")
+    preco_custo = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0.00"), verbose_name="Preço de Custo")
+    preco_venda = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0.00"), verbose_name="Preço de Venda")
     
-    # Controle de Estoque
-    estoque_atual = models.PositiveIntegerField(default=0, verbose_name="Estoque Atual")
-    estoque_minimo = models.PositiveIntegerField(default=5, verbose_name="Estoque Mínimo de Segurança")
+    # Controle de Estoque e Compras
+    estoque_atual = models.IntegerField(default=0, verbose_name="Estoque Líquido + Fora")
+    estoque_fisico = models.IntegerField(default=0, verbose_name="Estoque Físico + Fora")
+    qtd_ordem_compra = models.IntegerField(default=0, verbose_name="Qtd em Ordem de Compra (OC)")
+    estoque_minimo = models.PositiveIntegerField(default=0, verbose_name="Estoque Mínimo de Segurança")
+    estoque_maximo = models.PositiveIntegerField(default=0, verbose_name="Estoque Máximo (0 = Automático)")
+    item_critico = models.BooleanField(default=False, db_index=True, verbose_name="Item Crítico (Não Pode Faltar)")
+    nao_comprar_erp = models.BooleanField(default=False, verbose_name="Bloqueado p/ Compra (ERP)")
     
+    data_ultima_entrada = models.DateField(blank=True, null=True, verbose_name="Última Entrada (ERP)")
+    data_ultima_saida = models.DateField(blank=True, null=True, verbose_name="Última Venda (ERP)")
+
     ativo = models.BooleanField(default=True, verbose_name="Ativo para Venda")
     data_cadastro = models.DateTimeField(auto_now_add=True, verbose_name="Data de Cadastro")
     data_atualizacao = models.DateTimeField(auto_now=True, verbose_name="Última Atualização")
@@ -145,12 +160,57 @@ class ProdutoEPI(models.Model):
     @property
     def estoque_critico(self) -> bool:
         """Alerta se o estoque atingiu ou ficou abaixo do nível de segurança."""
-        return self.estoque_atual <= self.estoque_minimo
+        if self.item_critico or self.estoque_minimo > 0:
+            return self.estoque_atual <= self.estoque_minimo
+        return self.estoque_atual <= 0
 
     @property
     def apto_para_venda(self) -> bool:
         """Verifica se está ativo, com saldo e com o CA regularizado."""
-        return self.ativo and self.estoque_atual > 0 and not self.ca.esta_vencido
+        ca_ok = (not self.ca.esta_vencido) if self.ca else True
+        return self.ativo and self.estoque_atual > 0 and ca_ok
+
+
+class ItemVenda(models.Model):
+    id_item_erp = models.CharField(max_length=60, unique=True, db_index=True, verbose_name="ID Item (Empresa-T008_Id)")
+    empresa = models.CharField(max_length=100, verbose_name="Empresa")
+    numero_nota = models.CharField(max_length=50, db_index=True, verbose_name="Número da NF")
+    data_emissao = models.DateField(db_index=True, verbose_name="Data de Emissão")
+    cliente_nome = models.CharField(max_length=255, db_index=True, verbose_name="Cliente / Razão Social")
+    cliente_id_erp = models.CharField(max_length=30, blank=True, null=True, verbose_name="ID Cliente ERP")
+    vendedor_nome = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Vendedor")
+
+    produto = models.ForeignKey(
+        ProdutoEPI,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="itens_venda",
+        verbose_name="Produto Vinculado"
+    )
+    codigo_produto = models.CharField(max_length=50, db_index=True, verbose_name="Código do Produto (SKU)")
+    descricao_produto = models.CharField(max_length=255, verbose_name="Descrição do Produto")
+    marca = models.CharField(max_length=100, blank=True, null=True, verbose_name="Marca")
+    unidade = models.CharField(max_length=10, blank=True, null=True, verbose_name="Unidade")
+    cfop = models.CharField(max_length=10, blank=True, null=True, verbose_name="CFOP")
+
+    quantidade = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"), verbose_name="Quantidade")
+    valor_unitario = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0.00"), verbose_name="Valor Unitário")
+    valor_custo_unitario = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0.00"), verbose_name="Custo Unitário na Venda")
+    valor_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"), verbose_name="Valor Total")
+    data_sincronizacao = models.DateTimeField(auto_now=True, verbose_name="Última Sincronização")
+
+    class Meta:
+        verbose_name = "Item de Venda (NF)"
+        verbose_name_plural = "Itens de Venda (NF)"
+        ordering = ["-data_emissao", "-numero_nota"]
+        indexes = [
+            models.Index(fields=["data_emissao", "codigo_produto"]),
+            models.Index(fields=["cliente_nome", "codigo_produto"]),
+        ]
+
+    def __str__(self):
+        return f"NF {self.numero_nota} | {self.codigo_produto} ({self.quantidade})"
 
 
 class MovimentacaoEstoque(models.Model):

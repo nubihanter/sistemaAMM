@@ -176,7 +176,7 @@ class HardnessAPI:
         if response_filter.status_code == 200:
             print("✅ Filtro aplicado com sucesso!")
             # Recarrega o grid após filtrar
-            self.session.get(self.notafiscal_url, params={"ajax": "true"})
+            self.session.get(url or self.notafiscal_url, params={"ajax": "true"})
             return True
         else:
             print(f"❌ Erro ao aplicar filtro: {response_filter.status_code}")

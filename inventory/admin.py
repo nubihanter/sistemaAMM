@@ -4,7 +4,7 @@ from django.db.models import F
 from django.utils import timezone
 from django.utils.html import format_html
 
-from .models import Categoria, CertificadoAprovacao, ProdutoEPI, MovimentacaoEstoque
+from .models import Categoria, CertificadoAprovacao, ProdutoEPI, ItemVenda, MovimentacaoEstoque
 
 
 # ==========================================
@@ -154,22 +154,26 @@ class ProdutoEPIAdmin(admin.ModelAdmin):
     list_display = (
         "sku", 
         "nome", 
+        "marca",
         "tamanho_variacao", 
         "categoria", 
         "badge_ca", 
         "estoque_display", 
+        "estoque_minimo",
+        "item_critico",
         "preco_venda", 
         "badge_apto_venda"
     )
-    list_filter = (EstoqueCriticoFilter, ValidadeCAFilter, "categoria", "ativo")
-    search_fields = ("sku", "nome", "ca__numero_ca", "ca__fabricante")
+    list_editable = ("estoque_minimo", "item_critico")
+    list_filter = ("item_critico", EstoqueCriticoFilter, ValidadeCAFilter, "categoria", "marca", "ativo")
+    search_fields = ("sku", "nome", "marca", "ca__numero_ca", "ca__fabricante")
     autocomplete_fields = ("ca", "categoria")
-    readonly_fields = ("estoque_atual", "data_cadastro", "data_atualizacao")
+    readonly_fields = ("estoque_atual", "estoque_fisico", "qtd_ordem_compra", "data_cadastro", "data_atualizacao")
     inlines = [MovimentacaoEstoqueInline]
 
     fieldsets = (
         ("Informações Básicas", {
-            "fields": ("sku", "nome", "categoria", "tamanho_variacao", "unidade_medida", "ativo")
+            "fields": ("sku", "nome", "marca", "categoria", "tamanho_variacao", "unidade_medida", "ativo")
         }),
         ("Certificação de Segurança", {
             "fields": ("ca",)
@@ -177,9 +181,14 @@ class ProdutoEPIAdmin(admin.ModelAdmin):
         ("Precificação", {
             "fields": (("preco_custo", "preco_venda"),)
         }),
-        ("Controle de Estoque", {
-            "description": "Para alterar o estoque atual, registre uma Movimentação de Estoque.",
-            "fields": (("estoque_atual", "estoque_minimo"),)
+        ("Controle de Estoque e Compras", {
+            "description": "Defina se o item é crítico e os limites mínimo/máximo para alertas de compra e excesso.",
+            "fields": (
+                ("item_critico", "nao_comprar_erp"),
+                ("estoque_atual", "estoque_fisico", "qtd_ordem_compra"),
+                ("estoque_minimo", "estoque_maximo"),
+                ("data_ultima_entrada", "data_ultima_saida"),
+            )
         }),
         ("Datas", {
             "fields": (("data_cadastro", "data_atualizacao"),),
@@ -190,14 +199,16 @@ class ProdutoEPIAdmin(admin.ModelAdmin):
     @admin.display(description="CA Vinculado")
     def badge_ca(self, obj):
         ca = obj.ca
+        if not ca:
+            return "-"
         if ca.esta_vencido:
             return format_html('<span style="color: #dc2626; font-weight: bold;">CA {} (Vencido)</span>', ca.numero_ca)
         return f"CA {ca.numero_ca}"
 
     @admin.display(description="Saldo em Estoque")
     def estoque_display(self, obj):
-        if obj.estoque_atual == 0:
-            return format_html('<b style="color: #dc2626;">0 {} (Zerado)</b>', obj.unidade_medida)
+        if obj.estoque_atual <= 0:
+            return format_html('<b style="color: #dc2626;">{} {} (Ruptura)</b>', obj.estoque_atual, obj.unidade_medida)
         elif obj.estoque_critico:
             return format_html('<b style="color: #d97706;">{} {} (Crítico)</b>', obj.estoque_atual, obj.unidade_medida)
         return f"{obj.estoque_atual} {obj.unidade_medida}"
@@ -205,6 +216,14 @@ class ProdutoEPIAdmin(admin.ModelAdmin):
     @admin.display(description="Apto p/ Venda", boolean=True)
     def badge_apto_venda(self, obj):
         return obj.apto_para_venda
+
+
+@admin.register(ItemVenda)
+class ItemVendaAdmin(admin.ModelAdmin):
+    list_display = ("data_emissao", "numero_nota", "empresa", "cliente_nome", "codigo_produto", "descricao_produto", "quantidade", "valor_total")
+    list_filter = ("empresa", "data_emissao", "marca")
+    search_fields = ("numero_nota", "cliente_nome", "codigo_produto", "descricao_produto")
+    date_hierarchy = "data_emissao"
 
 
 @admin.register(MovimentacaoEstoque)

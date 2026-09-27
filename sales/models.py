@@ -74,3 +74,51 @@ class Vendedor(models.Model):
     def __str__(self):
         piperun_str = self.nome_piperun or "⚠️ SEM VÍNCULO"
         return f"{self.nome_hardness} ➔ {piperun_str}"
+
+
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from django.contrib.auth import get_user_model
+
+
+def garantir_usuario_para_vendedor(nome_hardness: str, senha_padrao: str = "amm@2026"):
+    """
+    Garante que o vendedor possua uma conta de usuário atrelada (via nome_vendedor_erp).
+    Se não existir, cria automaticamente com perfil VENDEDOR e senha 'amm@2026'.
+    """
+    nome_limpo = str(nome_hardness or "").strip().upper()
+    if not nome_limpo or nome_limpo in ("NAN", "NONE", "DESCONHECIDO"):
+        return None, False
+
+    User = get_user_model()
+
+    # 1. Já existe usuário atrelado pelo campo nome_vendedor_erp?
+    user_vinculado = User.objects.filter(nome_vendedor_erp__iexact=nome_limpo).first()
+    if user_vinculado:
+        return user_vinculado, False
+
+    # 2. Já existe usuário com o mesmo username mas sem o vínculo preenchido?
+    user_existente = User.objects.filter(username__iexact=nome_limpo).first()
+    if user_existente:
+        user_existente.nome_vendedor_erp = nome_limpo
+        if not user_existente.first_name:
+            user_existente.first_name = nome_limpo.title()
+        user_existente.save(update_fields=["nome_vendedor_erp", "first_name"])
+        return user_existente, False
+
+    # 3. Cria novo usuário automaticamente com a senha padrão "amm@2026"
+    novo_user = User(
+        username=nome_limpo,
+        first_name=nome_limpo.title(),
+        role=User.Role.VENDEDOR,
+        nome_vendedor_erp=nome_limpo,
+        is_active=True,
+    )
+    novo_user.set_password(senha_padrao)
+    novo_user.save()
+    return novo_user, True
+
+
+@receiver(post_save, sender=Vendedor)
+def criar_usuario_vendedor_signal(sender, instance, **kwargs):
+    garantir_usuario_para_vendedor(instance.nome_hardness, senha_padrao="amm@2026")

@@ -21,3 +21,4 @@ whitenoise
 gunicorn
 
 plotly
+openpyxl

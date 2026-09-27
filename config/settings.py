@@ -36,6 +36,10 @@ APSCHEDULER_RUN_NOW_TIMEOUT = 25  # Segundos
 
 # Informa ao Django para usar seu User customizado
 AUTH_USER_MODEL = 'accounts.User'
+AUTHENTICATION_BACKENDS = [
+    'accounts.backends.CaseInsensitiveModelBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
 
 # Redirecionamentos após login/logout
 LOGIN_URL = 'login'

@@ -8,6 +8,7 @@ class User(AbstractUser):
         SUPERVISOR = "SUPERVISOR", "Supervisor"
         VENDEDOR = "VENDEDOR", "Vendedor"
         ALMOXARIFADO = "ALMOXARIFADO", "Almoxarifado"
+        COMPRAS = "COMPRAS", "Compras"
 
     role = models.CharField(
         max_length=20,
@@ -40,3 +41,7 @@ class User(AbstractUser):
     @property
     def is_almoxarifado(self) -> bool:
         return self.role == self.Role.ALMOXARIFADO
+
+    @property
+    def is_compras(self) -> bool:
+        return self.role == self.Role.COMPRAS
