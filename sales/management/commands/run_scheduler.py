@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 from sales.services import (
     registrar_execucao_sincronizacao,
     sincronizar_desde_ultimo_registro,
+    sincronizar_financeiro_hardness,
     sincronizar_metas_piperun,
+    sincronizar_orcamentos_desde_ultimo_registro,
 )
 from inventory.services import sincronizar_estoque_e_itens_rapido
 
@@ -24,8 +26,8 @@ from inventory.services import sincronizar_estoque_e_itens_rapido
 # 1. Fecha conexões antigas do banco antes de cada execução
 @util.close_old_connections
 def tarefa_sync_hardness():
-    """Roda a sincronização rápida (último registro até hoje) de notas, estoque e itens."""
-    print("\n⏰ [Scheduler] Executando sync_hardness e sync_inventory rápida...")
+    """Roda a sincronização rápida (último registro até hoje) de notas, estoque, itens, financeiro e orçamentos."""
+    print("\n⏰ [Scheduler] Executando ciclo de sincronização rápida do Hardness...")
     try:
         registrar_execucao_sincronizacao(
             tipo="NOTAS_HARDNESS",
@@ -44,6 +46,25 @@ def tarefa_sync_hardness():
         )
     except Exception as e:
         print(f"❌ Erro no agendamento de estoque do Hardness: {e}")
+    try:
+        registrar_execucao_sincronizacao(
+            tipo="FINANCEIRO_HARDNESS",
+            funcao_sync=lambda: sincronizar_financeiro_hardness(dias_retroativos_padrao=30),
+            origem="AGENDADOR_AUTO",
+            usuario="Scheduler (30m)",
+        )
+    except Exception as e:
+        print(f"❌ Erro no agendamento financeiro do Hardness: {e}")
+    try:
+        registrar_execucao_sincronizacao(
+            tipo="ORCAMENTOS_HARDNESS",
+            funcao_sync=lambda: sincronizar_orcamentos_desde_ultimo_registro(dias_retroativos_padrao=15),
+            origem="AGENDADOR_AUTO",
+            usuario="Scheduler (30m)",
+        )
+    except Exception as e:
+        print(f"❌ Erro no agendamento de orçamentos do Hardness: {e}")
+
 
 
 # 2. Fecha conexões antigas do banco antes de atualizar metas

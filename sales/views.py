@@ -510,7 +510,7 @@ def painel_sincronizacao_view(request):
     from django.db.models import Max
     from django_apscheduler.models import DjangoJob, DjangoJobExecution
     from inventory.models import CertificadoAprovacao, ProdutoEPI
-    from .models import MetaVendedor
+    from .models import ContaPagar, ContaReceber, MetaVendedor, Orcamento
 
     user = request.user
     if not getattr(user, "is_admin", False):
@@ -555,6 +555,12 @@ def painel_sincronizacao_view(request):
         "ultima_nota_sync": NotaFiscal.objects.aggregate(Max("data_sincronizacao"))["data_sincronizacao__max"],
         "total_produtos": ProdutoEPI.objects.count(),
         "ultimo_estoque_sync": ProdutoEPI.objects.aggregate(Max("data_atualizacao"))["data_atualizacao__max"],
+        "total_contas_receber": ContaReceber.objects.exclude(cancelada=True).count(),
+        "total_contas_pagar": ContaPagar.objects.exclude(cancelada=True).count(),
+        "ultimo_financeiro_sync": ContaReceber.objects.aggregate(Max("data_sincronizacao"))["data_sincronizacao__max"],
+        "total_orcamentos": Orcamento.objects.exclude(status="CANCELADO").count(),
+        "ultimo_orcamento_emissao": Orcamento.objects.aggregate(Max("data_emissao"))["data_emissao__max"],
+        "ultimo_orcamento_sync": Orcamento.objects.aggregate(Max("data_sincronizacao"))["data_sincronizacao__max"],
         "metas_mes_atual": MetaVendedor.objects.filter(ano=hoje.year, mes=hoje.month).count(),
         "ultima_meta_sync": MetaVendedor.objects.aggregate(Max("data_atualizacao"))["data_atualizacao__max"],
         "total_cas": CertificadoAprovacao.objects.count(),
@@ -630,8 +636,11 @@ def disparar_sincronizacao_view(request):
         disparar_sincronizacao_background,
         registrar_execucao_sincronizacao,
         sincronizar_desde_ultimo_registro,
+        sincronizar_financeiro_hardness,
         sincronizar_metas_piperun,
         sincronizar_notas_hardness,
+        sincronizar_orcamentos_desde_ultimo_registro,
+        sincronizar_orcamentos_hardness,
     )
 
     if request.method != "POST":
@@ -651,23 +660,26 @@ def disparar_sincronizacao_view(request):
     modo_sincrono = request.POST.get("modo", "").strip().lower() == "sincrono"
     nome_usuario = user.username
 
+    def _normalizar_datas_form():
+        di = request.POST.get("data_inicio", "").strip()
+        df_s = request.POST.get("data_fim", "").strip()
+        if di and "-" in di and len(di) == 10:
+            p = di.split("-")
+            di = f"{p[2]}/{p[1]}/{p[0]}"
+        if df_s and "-" in df_s and len(df_s) == 10:
+            pf = df_s.split("-")
+            df_s = f"{pf[2]}/{pf[1]}/{pf[0]}"
+        elif di and not df_s:
+            df_s = timezone.now().strftime("%d/%m/%Y")
+        return di, df_s
+
     tipo_sync = None
     funcao_sync = None
 
     if acao == "notas_hardness":
         tipo_sync = "NOTAS_HARDNESS"
-        data_inicio = request.POST.get("data_inicio", "").strip()
-        data_fim = request.POST.get("data_fim", "").strip()
+        data_inicio, data_fim = _normalizar_datas_form()
         if data_inicio:
-            if "-" in data_inicio and len(data_inicio) == 10:
-                partes = data_inicio.split("-")
-                data_inicio = f"{partes[2]}/{partes[1]}/{partes[0]}"
-            if data_fim and "-" in data_fim and len(data_fim) == 10:
-                partes_f = data_fim.split("-")
-                data_fim = f"{partes_f[2]}/{partes_f[1]}/{partes_f[0]}"
-            else:
-                data_fim = timezone.now().strftime("%d/%m/%Y")
-
             funcao_sync = lambda di=data_inicio, df_str=data_fim: sincronizar_notas_hardness(
                 data_inicio=di, data_fim=df_str
             )
@@ -681,6 +693,26 @@ def disparar_sincronizacao_view(request):
         except ValueError:
             dias = 60
         funcao_sync = lambda d=dias: sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=d)
+
+    elif acao == "financeiro_hardness":
+        tipo_sync = "FINANCEIRO_HARDNESS"
+        data_inicio, data_fim = _normalizar_datas_form()
+        if data_inicio:
+            funcao_sync = lambda di=data_inicio, df_str=data_fim: sincronizar_financeiro_hardness(
+                data_inicio=di, data_fim=df_str
+            )
+        else:
+            funcao_sync = lambda: sincronizar_financeiro_hardness(dias_retroativos_padrao=30)
+
+    elif acao == "orcamentos_hardness":
+        tipo_sync = "ORCAMENTOS_HARDNESS"
+        data_inicio, data_fim = _normalizar_datas_form()
+        if data_inicio:
+            funcao_sync = lambda di=data_inicio, df_str=data_fim: sincronizar_orcamentos_hardness(
+                data_inicio=di, data_fim=df_str
+            )
+        else:
+            funcao_sync = lambda: sincronizar_orcamentos_desde_ultimo_registro(dias_retroativos_padrao=15)
 
     elif acao == "metas_piperun":
         tipo_sync = "METAS_PIPERUN"
@@ -709,15 +741,33 @@ def disparar_sincronizacao_view(request):
         def _exec_completa():
             nf_c, nf_a = sincronizar_desde_ultimo_registro()
             res_est = sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=60)
+            res_fin = sincronizar_financeiro_hardness(dias_retroativos_padrao=30)
+            orc_c, orc_a = sincronizar_orcamentos_desde_ultimo_registro(dias_retroativos_padrao=15)
             mt_c, mt_a = sincronizar_metas_piperun(forcar_api=True)
-            tot_c = nf_c + res_est.get("estoque_criados", 0) + res_est.get("itens_criados", 0) + mt_c
-            tot_a = nf_a + res_est.get("estoque_atualizados", 0) + res_est.get("itens_atualizados", 0) + mt_a
+            tot_c = (
+                nf_c
+                + res_est.get("estoque_criados", 0)
+                + res_est.get("itens_criados", 0)
+                + res_fin.get("criados", 0)
+                + orc_c
+                + mt_c
+            )
+            tot_a = (
+                nf_a
+                + res_est.get("estoque_atualizados", 0)
+                + res_est.get("itens_atualizados", 0)
+                + res_fin.get("atualizados", 0)
+                + orc_a
+                + mt_a
+            )
             return {
                 "criados": tot_c,
                 "atualizados": tot_a,
                 "mensagem": (
                     f"NFs: +{nf_c}/{nf_a} | Estoque: +{res_est.get('estoque_criados', 0)}/{res_est.get('estoque_atualizados', 0)} | "
-                    f"Itens: +{res_est.get('itens_criados', 0)}/{res_est.get('itens_atualizados', 0)} | Metas: +{mt_c}/{mt_a}"
+                    f"Itens: +{res_est.get('itens_criados', 0)}/{res_est.get('itens_atualizados', 0)} | "
+                    f"Financeiro: +{res_fin.get('criados', 0)}/{res_fin.get('atualizados', 0)} | "
+                    f"Orçamentos: +{orc_c}/{orc_a} | Metas: +{mt_c}/{mt_a}"
                 ),
             }
 

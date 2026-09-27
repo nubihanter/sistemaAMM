@@ -1,17 +1,46 @@
+import builtins as _builtins
 import re
 import json
+import sys
 import time
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 from decouple import config
 
+
+def print(*args, **kwargs):
+    """Wrapper seguro de print para evitar UnicodeEncodeError em consoles Windows (cp1252)."""
+    try:
+        _builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        texto = " ".join(str(a) for a in args)
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        texto_seguro = texto.encode(enc, errors="replace").decode(enc, errors="replace")
+        _builtins.print(texto_seguro, **kwargs)
+
+
 HARDNESS_USER = config("HARDNESS_USER", default="")
 HARDNESS_PASSWORD = config("HARDNESS_PASSWORD", default="")
 HARDNESS_BASE_URL = config("HARDNESS_BASE_URL", default="").rstrip("/")
-HARDNESS_NOTAFISCAL_GRID_ID = config("HARDNESS_NOTAFISCAL_GRID_ID", default="")
-HARDNESS_PRODUTOS_GRID_ID = config("HARDNESS_PRODUTOS_GRID_ID", default="")
-HARDNESS_ESTOQUE_GRID_ID = config("HARDNESS_ESTOQUE_GRID_ID", default="")
+HARDNESS_NOTAFISCAL_GRID_ID = config(
+    "HARDNESS_NOTAFISCAL_GRID_ID", default=""
+)
+HARDNESS_PRODUTOS_GRID_ID = config(
+    "HARDNESS_PRODUTOS_GRID_ID", default=""
+)
+HARDNESS_ESTOQUE_GRID_ID = config(
+    "HARDNESS_ESTOQUE_GRID_ID", default=""
+)
+HARDNESS_CONTAS_RECEBER_GRID_ID = config(
+    "HARDNESS_CONTAS_RECEBER_GRID_ID", default=""
+)
+HARDNESS_CONTAS_PAGAR_GRID_ID = config(
+    "HARDNESS_CONTAS_PAGAR_GRID_ID", default=""
+)
+HARDNESS_ORCAMENTOS_GRID_ID = config(
+    "HARDNESS_ORCAMENTOS_GRID_ID", default=""
+)
 
 
 class HardnessAPIError(Exception):
@@ -43,13 +72,27 @@ class HardnessAPI:
         self.notafiscal_url = f"{self.base_url}/crm/crm001/grid/crm001GridPrincipalNotasFiscais/"
         self.produtos_url = f"{self.base_url}/crm/crm001/grid/crm001gridPrincipalProdutos/"
         self.estoque_url = f"{self.base_url}/cad/cad002/grid/lista/"
+        self.contas_receber_url = f"{self.base_url}/fin/fin001/grid/fin001grid01/"
+        self.contas_pagar_url = f"{self.base_url}/fin/fin002/grid/fin002grid01/"
+        self.orcamentos_url = f"{self.base_url}/crm/crm001/grid/crm001GridPrincipalOrcamentos/"
         self.verbose = verbose
         self.autenticado = False
         self.grid_dicts = {
             self.notafiscal_url: HARDNESS_NOTAFISCAL_GRID_ID,
             self.produtos_url: HARDNESS_PRODUTOS_GRID_ID,
             self.estoque_url: HARDNESS_ESTOQUE_GRID_ID,
+            self.contas_receber_url: HARDNESS_CONTAS_RECEBER_GRID_ID,
+            self.contas_pagar_url: HARDNESS_CONTAS_PAGAR_GRID_ID,
+            self.orcamentos_url: HARDNESS_ORCAMENTOS_GRID_ID,
         }
+
+    @staticmethod
+    def _inferir_div_id_root(url: str) -> str:
+        """Infere o divIdRoot correto (crm001, fin001, fin002, cad002) a partir da URL do grid."""
+        m = re.search(r"/(crm\d+|fin\d+|cad\d+)/", str(url or ""), re.IGNORECASE)
+        if m:
+            return m.group(1).lower()
+        return "crm001"
 
     def _request(self, method: str, url: str, tentativas: int = 2, **kwargs):
         """Executa requisição HTTP com timeout padrão e retry automático em falhas de rede."""
@@ -140,6 +183,7 @@ class HardnessAPI:
     def _extrair_grid_hash(html_text: str) -> str:
         """Extrai o hash MD5 de 32 caracteres do grid no HTML/JS do Hardness."""
         padroes = [
+            r"grid=\s*['\"]?\s*\+\s*encodeURIComponent\(['\"]([a-f0-9]{32})['\"]\)",
             r"encodeURIComponent\(['\"]([a-f0-9]{32})['\"]\)",
             r"grid['\"]?\s*[:=]\s*['\"]([a-f0-9]{32})['\"]",
             r"\b([a-f0-9]{32})\b",
@@ -150,11 +194,20 @@ class HardnessAPI:
                 return m.group(1)
         return ""
 
-    def filtrar(self, data_inicio="", data_fim="", CFOP="VENDA", cancelada="N", url=None):
+    def filtrar(
+        self,
+        data_inicio="",
+        data_fim="",
+        CFOP="VENDA",
+        cancelada="N",
+        url=None,
+        campo_data="emissao",
+    ):
         alvo_url = url or self.notafiscal_url
+        div_root = self._inferir_div_id_root(alvo_url)
         payload = {
             "ajax": "true",
-            "divIdRoot": "crm001",
+            "divIdRoot": div_root,
             "tab": "geral",
         }
 
@@ -179,31 +232,50 @@ class HardnessAPI:
         if self.verbose:
             print(f"Form ID encontrado: {form_id}")
 
+        # 1. Inicializa todos os campos do formulário em branco para limpar filtros anteriores presos na sessão
         filter_data = {}
+        for input_tag in form.find_all(["input", "select"]):
+            name = input_tag.get("name", "")
+            if name and not name.endswith("-titulo"):
+                filter_data[name] = ""
+
+        # 2. Preenche apenas os campos de filtro desejados com base nos títulos (-titulo)
+        termo_data = str(campo_data or "emiss").strip().lower()
+        if termo_data.startswith("emiss"):
+            termo_data = "emiss"
+
+        aplicou_data = False
         for input_tag in form.find_all("input"):
             name = input_tag.get("name", "")
-            if not name:
+            if not name or not name.endswith("-titulo"):
                 continue
 
-            if name.endswith("-titulo"):
-                titulo = input_tag.get("value", "").lower()
-                base64_name = name.replace("-titulo", "")
-                if "cfop" in titulo:
+            titulo = input_tag.get("value", "").strip().lower()
+            base64_name = name[:-7]  # remove "-titulo"
+
+            if "cfop" in titulo and CFOP is not None and str(CFOP) != "":
+                # Em orçamentos CFOP pode estar em branco; só aplica CFOP por padrão em NF/Produtos
+                if alvo_url in (self.notafiscal_url, self.produtos_url) or CFOP != "VENDA":
                     filter_data[base64_name] = CFOP
-                elif "cancelada" in titulo:
-                    filter_data[base64_name] = cancelada
-            elif name.endswith("-d1") and data_inicio:
-                filter_data[name] = data_inicio
-            elif name.endswith("-d2") and data_fim:
-                filter_data[name] = data_fim
+            elif ("cancelada" in titulo or "cancelado" in titulo) and cancelada is not None and str(cancelada) != "":
+                filter_data[base64_name] = cancelada
+            elif termo_data in titulo:
+                if data_inicio:
+                    filter_data[f"{base64_name}-d1"] = data_inicio
+                if data_fim:
+                    filter_data[f"{base64_name}-d2"] = data_fim
+                aplicou_data = True
 
-        for input_tag in form.find_all(["input", "select"]):
-            name = input_tag.get("name")
-            if name and name not in filter_data:
-                if not name.endswith("-titulo") and "VDAwN19EYXRhX0VtaXNzYW8=" not in name:
-                    filter_data[name] = ""
+        # Fallback caso o formulário tenha apenas um campo -d1/-d2 sem título correspondente
+        if not aplicou_data and (data_inicio or data_fim):
+            for input_tag in form.find_all("input"):
+                name = input_tag.get("name", "")
+                if name.endswith("-d1") and data_inicio:
+                    filter_data[name] = data_inicio
+                elif name.endswith("-d2") and data_fim:
+                    filter_data[name] = data_fim
 
-        grid_hash = self._extrair_grid_hash(response_pagina.text) or self.grid_dicts.get(alvo_url, "")
+        grid_hash = self.grid_dicts.get(alvo_url, "") or self._extrair_grid_hash(response_pagina.text)
         if not grid_hash:
             print("⚠️ Aviso: Não encontrou o hash do grid. O filtro vai falhar.")
             return False
@@ -226,6 +298,39 @@ class HardnessAPI:
         else:
             print(f"❌ Erro ao aplicar filtro: {response_filter.status_code}")
             return False
+
+    def filtrar_contas_receber(self, data_inicio="", data_fim="", campo_data="emissao"):
+        """Aplica filtro por período (emissão ou vencimento) no grid de Contas a Receber."""
+        return self.filtrar(
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            CFOP="",
+            cancelada="",
+            url=self.contas_receber_url,
+            campo_data=campo_data,
+        )
+
+    def filtrar_contas_pagar(self, data_inicio="", data_fim="", campo_data="emissao"):
+        """Aplica filtro por período (emissão ou vencimento) no grid de Contas a Pagar."""
+        return self.filtrar(
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            CFOP="",
+            cancelada="",
+            url=self.contas_pagar_url,
+            campo_data=campo_data,
+        )
+
+    def filtrar_orcamentos(self, data_inicio="", data_fim="", cancelado=""):
+        """Aplica filtro por período de emissão no grid de Orçamentos (CRM)."""
+        return self.filtrar(
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            CFOP="",
+            cancelada=cancelado,
+            url=self.orcamentos_url,
+            campo_data="emissao",
+        )
 
     def get_dados(self, url=None, max_paginas=100):
         alvo_url = url or self.notafiscal_url

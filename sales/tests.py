@@ -15,8 +15,15 @@ from sales.dashboard_services import (
     gerar_analise_clientes,
     gerar_metricas_e_graficos,
 )
-from sales.models import MetaVendedor, NotaFiscal, Vendedor
-from sales.services import parse_decimal, sincronizar_metas_piperun
+from integrations.hardness import HardnessAPI
+from sales.models import ContaPagar, ContaReceber, MetaVendedor, NotaFiscal, Orcamento, Vendedor
+from sales.services import (
+    parse_decimal,
+    sincronizar_contas_pagar_hardness,
+    sincronizar_contas_receber_hardness,
+    sincronizar_metas_piperun,
+    sincronizar_orcamentos_hardness,
+)
 from sales.views import _obter_redirect_seguro
 
 
@@ -231,3 +238,138 @@ class VectorizedDashboardServicesTests(TestCase):
         self.assertEqual(g_status, "")
         self.assertEqual(g_matriz, "")
         self.assertEqual(len(df_tab), 1)
+
+
+class FinanceiroAndOrcamentosSyncTests(TestCase):
+    def test_hardness_api_grid_ids_and_div_root_inference(self):
+        api = HardnessAPI(verbose=False)
+        self.assertEqual(
+            api.grid_dicts[api.contas_receber_url],
+            "9564d735f4fc3dc6cd7486755c085be5",
+        )
+        self.assertEqual(
+            api.grid_dicts[api.contas_pagar_url],
+            "5ccc4ad192b358516a04e894b47347c5",
+        )
+        self.assertEqual(
+            api.grid_dicts[api.orcamentos_url],
+            "ab2f635e63cb22b6a470bf9b1b114731",
+        )
+        self.assertEqual(api._inferir_div_id_root(api.contas_receber_url), "fin001")
+        self.assertEqual(api._inferir_div_id_root(api.contas_pagar_url), "fin002")
+        self.assertEqual(api._inferir_div_id_root(api.orcamentos_url), "crm001")
+
+    def test_sincronizar_contas_receber_pagar_e_orcamentos(self):
+        class FakeHardnessAPI:
+            autenticado = True
+            contas_receber_url = "https://example.com/fin/fin001/grid/fin001grid01/"
+            contas_pagar_url = "https://example.com/fin/fin002/grid/fin002grid01/"
+            orcamentos_url = "https://example.com/crm/crm001/grid/crm001GridPrincipalOrcamentos/"
+            empresas_dict = {"AMM EPIS": {"id_sistema": "1"}}
+
+            def trocar_empresa(self, emp_id):
+                return True
+
+            def filtrar_contas_receber(self, **kwargs):
+                return True
+
+            def filtrar_contas_pagar(self, **kwargs):
+                return True
+
+            def filtrar_orcamentos(self, **kwargs):
+                return True
+
+            def get_dados(self, url=None):
+                if url == self.contas_receber_url:
+                    return pd.DataFrame(
+                        [
+                            {
+                                "T002_Id": "9001",
+                                "T002_Numero_Documento": "5500",
+                                "T002_Numero_Duplicata": "5500-1",
+                                "Parcelas": "1 de 1",
+                                "T002_D024_Id": "10",
+                                "D024_Nome_Fantasia": "CLIENTE TESTE CR",
+                                "D024_Cnpj": "12345678000199",
+                                "C007_Nome": "ALINE",
+                                "T002_Data_Emissao": "2026-09-01",
+                                "T002_Data_Vencimento": "2026-09-15",
+                                "T002_Data_Recebimento": "2026-09-14",
+                                "T002_Valor_Duplicata": "1500.00",
+                                "T002_Valor_Total": "1500.00",
+                                "T002_Valor_Recebido": "1500.00",
+                                "T002_Valor_Saldo": "0.00",
+                                "T002_Flag_Cancelada": "N",
+                                "T002_Flag_Status": "2",
+                            }
+                        ]
+                    )
+                if url == self.contas_pagar_url:
+                    return pd.DataFrame(
+                        [
+                            {
+                                "T015_Id": "7001",
+                                "T015_Numero_Documento": "NF-88",
+                                "T015_Numero_Duplicata": "88/1",
+                                "Parcelas": "1/1",
+                                "T015_D024_Id": "99",
+                                "D024_Nome_Empresa": "FORNECEDOR EPI LTDA",
+                                "concat(D024_Cnpj,D024_Cpf)": "98765432000100",
+                                "T015_Data_Emissao": "2026-09-01",
+                                "T015_Data_Vencimento": "2026-12-30",
+                                "T015_Data_Pagamento": None,
+                                "T015_Valor_Duplicata": "850.50",
+                                "T015_Valor_Total": "850.50",
+                                "T015_Valor_Pago": "0.00",
+                                "T015_Valor_Saldo": "850.50",
+                                "T015_Flag_Cancelada": "N",
+                            }
+                        ]
+                    )
+                if url == self.orcamentos_url:
+                    return pd.DataFrame(
+                        [
+                            {
+                                "T003_Id": "12345",
+                                "T003_Data_Emissao": "2026-09-20",
+                                "T003A_Hora_Inclusao": "14:30:00",
+                                "T003_D024_Id": "10",
+                                "D024_Nome_Fantasia": "CLIENTE ORCAMENTO",
+                                "Vendedor.C007_Primeiro_Nome": "ALINE",
+                                "T003_Valor_Total_Produtos": "3200.00",
+                                "T003_Valor_Total": "3200.00",
+                                "T003_Valor_Pendente": "0.00",
+                                "Total_Valor_Custo": "1800.00",
+                                "T003_Percentual_Margem": "43.75",
+                                "T003_IPV": "1.7778",
+                                "T003_Flag_Status_Orcamento": "F",
+                                "T003_Flag_Perdido": "F",
+                                "Pedido": "PED-999",
+                                "NF": "5500",
+                            }
+                        ]
+                    )
+                return pd.DataFrame()
+
+        fake_api = FakeHardnessAPI()
+        cr_c, cr_a = sincronizar_contas_receber_hardness("01/09/2026", "30/09/2026", api=fake_api)
+        cp_c, cp_a = sincronizar_contas_pagar_hardness("01/09/2026", "30/09/2026", api=fake_api)
+        orc_c, orc_a = sincronizar_orcamentos_hardness("01/09/2026", "30/09/2026", api=fake_api)
+
+        self.assertEqual((cr_c, cr_a), (1, 0))
+        self.assertEqual((cp_c, cp_a), (1, 0))
+        self.assertEqual((orc_c, orc_a), (1, 0))
+
+        cr = ContaReceber.objects.get(empresa="AMM EPIS", id_titulo_erp="9001")
+        self.assertEqual(cr.status, "RECEBIDO")
+        self.assertEqual(cr.valor_total, Decimal("1500.00"))
+
+        cp = ContaPagar.objects.get(empresa="AMM EPIS", id_titulo_erp="7001")
+        self.assertEqual(cp.status, "A_VENCER")
+        self.assertEqual(cp.valor_saldo, Decimal("850.50"))
+
+        orc = Orcamento.objects.get(empresa="AMM EPIS", numero_orcamento="12345")
+        self.assertEqual(orc.status, "FINALIZADO")
+        self.assertEqual(orc.valor_total, Decimal("3200.00"))
+        self.assertEqual(orc.ipv, Decimal("1.7778"))
+

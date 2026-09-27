@@ -127,10 +127,187 @@ def criar_usuario_vendedor_signal(sender, instance, **kwargs):
     garantir_usuario_para_vendedor(instance.nome_hardness, senha_padrao="amm@2026")
 
 
+class ContaReceber(models.Model):
+    STATUS_CHOICES = [
+        ("A_VENCER", "A Vencer"),
+        ("VENCIDO", "Vencido / Em Atraso"),
+        ("RECEBIDO", "Recebido / Quitado"),
+        ("CANCELADO", "Cancelado"),
+    ]
+
+    empresa = models.CharField(max_length=100, db_index=True, verbose_name="Empresa")
+    id_titulo_erp = models.CharField(max_length=50, db_index=True, verbose_name="ID Título ERP (T002_Id)")
+    numero_documento = models.CharField(max_length=60, blank=True, null=True, db_index=True, verbose_name="Número NF / Doc")
+    numero_duplicata = models.CharField(max_length=60, blank=True, null=True, db_index=True, verbose_name="Número Duplicata")
+    parcela = models.CharField(max_length=30, blank=True, null=True, verbose_name="Parcela")
+
+    cliente_id_erp = models.CharField(max_length=30, blank=True, null=True, verbose_name="ID Cliente ERP")
+    cliente_nome = models.CharField(max_length=255, blank=True, null=True, db_index=True, verbose_name="Cliente / Razão Social")
+    cliente_documento = models.CharField(max_length=30, blank=True, null=True, db_index=True, verbose_name="CNPJ/CPF")
+    vendedor_nome = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Vendedor")
+
+    data_emissao = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Emissão")
+    data_vencimento = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Vencimento")
+    data_recebimento = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Recebimento")
+    data_baixa = models.DateField(blank=True, null=True, verbose_name="Data de Baixa")
+    prazo_dias = models.IntegerField(default=0, verbose_name="Prazo (Dias)")
+    dias_atraso = models.IntegerField(default=0, verbose_name="Dias de Atraso")
+
+    valor_duplicata = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Original (R$)")
+    valor_juros = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Juros (R$)")
+    valor_desconto = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Desconto (R$)")
+    valor_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Total (R$)")
+    valor_recebido = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Recebido (R$)")
+    valor_saldo = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Saldo a Receber (R$)")
+    valor_comissao = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Comissão (R$)")
+
+    portador = models.CharField(max_length=100, blank=True, null=True, verbose_name="Portador / Banco")
+    subconta = models.CharField(max_length=150, blank=True, null=True, verbose_name="Subconta Financeira")
+    grupo_conta = models.CharField(max_length=150, blank=True, null=True, verbose_name="Grupo de Conta")
+    nosso_numero = models.CharField(max_length=60, blank=True, null=True, verbose_name="Nosso Número (Boleto)")
+    observacao = models.TextField(blank=True, null=True, verbose_name="Observação")
+
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="A_VENCER", db_index=True, verbose_name="Status")
+    cancelada = models.BooleanField(default=False, db_index=True, verbose_name="Cancelada")
+    dados_brutos = models.JSONField(blank=True, null=True, verbose_name="Payload Bruto")
+    data_sincronizacao = models.DateTimeField(auto_now=True, verbose_name="Última Sincronização")
+
+    class Meta:
+        verbose_name = "Conta a Receber"
+        verbose_name_plural = "Contas a Receber"
+        unique_together = ("empresa", "id_titulo_erp")
+        ordering = ["-data_vencimento", "-id_titulo_erp"]
+        indexes = [
+            models.Index(fields=["status", "data_vencimento"]),
+            models.Index(fields=["empresa", "data_emissao"]),
+        ]
+
+    def __str__(self):
+        return f"CR {self.numero_duplicata or self.id_titulo_erp} ({self.empresa}) - {self.cliente_nome}: R$ {self.valor_total:,.2f}"
+
+
+class ContaPagar(models.Model):
+    STATUS_CHOICES = [
+        ("A_VENCER", "A Vencer"),
+        ("VENCIDO", "Vencido / Em Atraso"),
+        ("PAGO", "Pago / Quitado"),
+        ("CANCELADO", "Cancelado"),
+    ]
+
+    empresa = models.CharField(max_length=100, db_index=True, verbose_name="Empresa")
+    id_titulo_erp = models.CharField(max_length=50, db_index=True, verbose_name="ID Título ERP (T015_Id)")
+    numero_documento = models.CharField(max_length=60, blank=True, null=True, db_index=True, verbose_name="Número Documento")
+    numero_duplicata = models.CharField(max_length=60, blank=True, null=True, db_index=True, verbose_name="Número Duplicata")
+    parcela = models.CharField(max_length=30, blank=True, null=True, verbose_name="Parcela")
+
+    fornecedor_id_erp = models.CharField(max_length=30, blank=True, null=True, verbose_name="ID Fornecedor ERP")
+    fornecedor_nome = models.CharField(max_length=255, blank=True, null=True, db_index=True, verbose_name="Fornecedor / Credor")
+    fornecedor_documento = models.CharField(max_length=30, blank=True, null=True, db_index=True, verbose_name="CNPJ/CPF")
+
+    data_emissao = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Emissão")
+    data_vencimento = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Vencimento")
+    data_pagamento = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Pagamento")
+    prazo_dias = models.IntegerField(default=0, verbose_name="Prazo (Dias)")
+    dias_atraso = models.IntegerField(default=0, verbose_name="Dias de Atraso")
+
+    valor_duplicata = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Original (R$)")
+    valor_juros = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Juros (R$)")
+    valor_desconto = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Desconto (R$)")
+    valor_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Total (R$)")
+    valor_pago = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Pago (R$)")
+    valor_saldo = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Saldo a Pagar (R$)")
+
+    centro_custo = models.CharField(max_length=150, blank=True, null=True, db_index=True, verbose_name="Centro de Custo")
+    subconta = models.CharField(max_length=150, blank=True, null=True, verbose_name="Subconta Financeira")
+    grupo_conta = models.CharField(max_length=150, blank=True, null=True, verbose_name="Grupo de Conta")
+    portador = models.CharField(max_length=100, blank=True, null=True, verbose_name="Portador / Forma Pagto")
+    codigo_barras = models.CharField(max_length=120, blank=True, null=True, verbose_name="Código de Barras")
+    observacao = models.TextField(blank=True, null=True, verbose_name="Observação")
+
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="A_VENCER", db_index=True, verbose_name="Status")
+    cancelada = models.BooleanField(default=False, db_index=True, verbose_name="Cancelada")
+    dados_brutos = models.JSONField(blank=True, null=True, verbose_name="Payload Bruto")
+    data_sincronizacao = models.DateTimeField(auto_now=True, verbose_name="Última Sincronização")
+
+    class Meta:
+        verbose_name = "Conta a Pagar"
+        verbose_name_plural = "Contas a Pagar"
+        unique_together = ("empresa", "id_titulo_erp")
+        ordering = ["-data_vencimento", "-id_titulo_erp"]
+        indexes = [
+            models.Index(fields=["status", "data_vencimento"]),
+            models.Index(fields=["empresa", "data_emissao"]),
+        ]
+
+    def __str__(self):
+        return f"CP {self.numero_duplicata or self.id_titulo_erp} ({self.empresa}) - {self.fornecedor_nome}: R$ {self.valor_total:,.2f}"
+
+
+class Orcamento(models.Model):
+    STATUS_CHOICES = [
+        ("PENDENTE", "Pendente / Em Aberto"),
+        ("FINALIZADO", "Finalizado / Ganho"),
+        ("PERDIDO", "Perdido"),
+        ("CANCELADO", "Cancelado"),
+    ]
+
+    empresa = models.CharField(max_length=100, db_index=True, verbose_name="Empresa")
+    numero_orcamento = models.CharField(max_length=50, db_index=True, verbose_name="Número do Orçamento (T003_Id)")
+    data_emissao = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Emissão")
+    hora_inclusao = models.CharField(max_length=20, blank=True, null=True, verbose_name="Hora de Inclusão")
+
+    cliente_id_erp = models.CharField(max_length=30, blank=True, null=True, verbose_name="ID Cliente ERP")
+    cliente_nome = models.CharField(max_length=255, blank=True, null=True, db_index=True, verbose_name="Cliente / Fantasia")
+    contato = models.CharField(max_length=150, blank=True, null=True, verbose_name="Contato")
+    cidade = models.CharField(max_length=100, blank=True, null=True, verbose_name="Cidade")
+    uf = models.CharField(max_length=10, blank=True, null=True, verbose_name="UF")
+
+    vendedor_nome = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Vendedor Interno")
+    vendedor_externo = models.CharField(max_length=100, blank=True, null=True, verbose_name="Vendedor Externo")
+    cfop = models.CharField(max_length=20, blank=True, null=True, verbose_name="CFOP")
+    marca = models.CharField(max_length=120, blank=True, null=True, verbose_name="Marca Principal")
+
+    valor_produtos = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Produtos (R$)")
+    valor_desconto = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Desconto (R$)")
+    valor_frete = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Frete (R$)")
+    valor_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Total (R$)")
+    valor_pendente = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Pendente (R$)")
+    valor_custo = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Custo Estimado (R$)")
+    valor_comissao = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Comissão Estimada (R$)")
+    percentual_margem = models.DecimalField(max_digits=14, decimal_places=2, default=0.00, verbose_name="Margem (%)")
+    ipv = models.DecimalField(max_digits=14, decimal_places=4, default=0.0000, verbose_name="IPV")
+
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="PENDENTE", db_index=True, verbose_name="Status")
+    flag_status = models.CharField(max_length=10, blank=True, null=True, verbose_name="Flag Status (P/F/C)")
+    flag_perdido = models.CharField(max_length=10, blank=True, null=True, verbose_name="Flag Perdido (N/S/F)")
+    motivo_perda = models.TextField(blank=True, null=True, verbose_name="Observação Orçamento Perdido")
+    pedido_gerado = models.CharField(max_length=100, blank=True, null=True, verbose_name="Pedido Gerado")
+    numero_nota = models.CharField(max_length=50, blank=True, null=True, verbose_name="Nota Fiscal Vinculada")
+    observacao = models.TextField(blank=True, null=True, verbose_name="Observação")
+
+    dados_brutos = models.JSONField(blank=True, null=True, verbose_name="Payload Bruto")
+    data_sincronizacao = models.DateTimeField(auto_now=True, verbose_name="Última Sincronização")
+
+    class Meta:
+        verbose_name = "Orçamento"
+        verbose_name_plural = "Orçamentos"
+        unique_together = ("empresa", "numero_orcamento")
+        ordering = ["-data_emissao", "-numero_orcamento"]
+        indexes = [
+            models.Index(fields=["status", "data_emissao"]),
+            models.Index(fields=["vendedor_nome", "data_emissao"]),
+        ]
+
+    def __str__(self):
+        return f"Orç. {self.numero_orcamento} ({self.empresa}) - {self.cliente_nome}: R$ {self.valor_total:,.2f}"
+
+
 class LogSincronizacao(models.Model):
     TIPO_CHOICES = [
         ("NOTAS_HARDNESS", "Notas Fiscais (Hardness)"),
         ("ESTOQUE_HARDNESS", "Estoque & Itens (Hardness)"),
+        ("FINANCEIRO_HARDNESS", "Financeiro CR/CP (Hardness)"),
+        ("ORCAMENTOS_HARDNESS", "Orçamentos CRM (Hardness)"),
         ("METAS_PIPERUN", "Metas de Vendas (PipeRun)"),
         ("CONSULTA_CA", "Vencimentos de CA (MTE)"),
         ("COMPLETA", "Sincronização Completa"),
@@ -163,4 +340,5 @@ class LogSincronizacao(models.Model):
         ordering = ["-iniciado_em"]
 
     def __str__(self):
-        return f"[{self.get_status_display()}] {self.get_tipo_display()} ({self.iniciado_em:%d/%m/%Y %H:%M})"
+        return f"[{self.get_status_display()}] {self.get_tipo_display()} ({self.iniciado_em:%d/%m/%Y %H:%M})"
+

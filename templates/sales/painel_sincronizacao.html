@@ -75,40 +75,57 @@
 
 <!-- Linha 1: Resumo do Estado Atual do Banco de Dados -->
 <div class="row g-3 mb-4">
-    <div class="col-xl-3 col-md-6">
+    <div class="col-xl-2 col-md-4 col-sm-6">
         <div class="card card-kpi p-3 bg-white border-start border-primary border-4 h-100">
-            <span class="text-muted small fw-bold">🧾 Notas Fiscais (Hardness)</span>
-            <h4 class="fw-bold text-dark mb-1 mt-1">{{ resumo_banco.total_notas }} <small class="fs-6 fw-normal text-muted">NFs válidas</small></h4>
+            <span class="text-muted small fw-bold">🧾 Notas Fiscais</span>
+            <h4 class="fw-bold text-dark mb-1 mt-1">{{ resumo_banco.total_notas }} <small class="fs-6 fw-normal text-muted">NFs</small></h4>
             <small class="text-muted">
-                Últ. emissão: <strong>{{ resumo_banco.ultima_nota_emissao|date:"d/m/Y"|default:"-" }}</strong> |
-                Sync: {{ resumo_banco.ultima_nota_sync|date:"d/m H:i"|default:"-" }}
+                Últ.: <strong>{{ resumo_banco.ultima_nota_emissao|date:"d/m/Y"|default:"-" }}</strong>
             </small>
         </div>
     </div>
-    <div class="col-xl-3 col-md-6">
+    <div class="col-xl-2 col-md-4 col-sm-6">
         <div class="card card-kpi p-3 bg-white border-start border-success border-4 h-100">
-            <span class="text-muted small fw-bold">📦 Catálogo & Estoque (Hardness)</span>
+            <span class="text-muted small fw-bold">📦 Catálogo & Estoque</span>
             <h4 class="fw-bold text-success mb-1 mt-1">{{ resumo_banco.total_produtos }} <small class="fs-6 fw-normal text-muted">SKUs</small></h4>
             <small class="text-muted">
-                Últ. atualização de saldo: <strong>{{ resumo_banco.ultimo_estoque_sync|date:"d/m/Y H:i"|default:"-" }}</strong>
+                Sync: <strong>{{ resumo_banco.ultimo_estoque_sync|date:"d/m H:i"|default:"-" }}</strong>
             </small>
         </div>
     </div>
-    <div class="col-xl-3 col-md-6">
+    <div class="col-xl-2 col-md-4 col-sm-6">
+        <div class="card card-kpi p-3 bg-white border-start border-danger border-4 h-100">
+            <span class="text-muted small fw-bold">💰 Financeiro (CR/CP)</span>
+            <h4 class="fw-bold text-dark mb-1 mt-1">{{ resumo_banco.total_contas_receber }} <small class="fs-6 fw-normal text-muted">CR / {{ resumo_banco.total_contas_pagar }} CP</small></h4>
+            <small class="text-muted">
+                Sync: <strong>{{ resumo_banco.ultimo_financeiro_sync|date:"d/m H:i"|default:"-" }}</strong>
+            </small>
+        </div>
+    </div>
+    <div class="col-xl-2 col-md-4 col-sm-6">
+        <div class="card card-kpi p-3 bg-white border-start border-secondary border-4 h-100">
+            <span class="text-muted small fw-bold">📋 Orçamentos (CRM)</span>
+            <h4 class="fw-bold text-dark mb-1 mt-1">{{ resumo_banco.total_orcamentos }} <small class="fs-6 fw-normal text-muted">orç.</small></h4>
+            <small class="text-muted">
+                Últ.: <strong>{{ resumo_banco.ultimo_orcamento_emissao|date:"d/m/Y"|default:"-" }}</strong>
+            </small>
+        </div>
+    </div>
+    <div class="col-xl-2 col-md-4 col-sm-6">
         <div class="card card-kpi p-3 bg-white border-start border-info border-4 h-100">
-            <span class="text-muted small fw-bold">🎯 Metas Comerciais (PipeRun)</span>
-            <h4 class="fw-bold text-info-emphasis mb-1 mt-1">{{ resumo_banco.metas_mes_atual }} <small class="fs-6 fw-normal text-muted">metas no mês atual</small></h4>
+            <span class="text-muted small fw-bold">🎯 Metas (PipeRun)</span>
+            <h4 class="fw-bold text-info-emphasis mb-1 mt-1">{{ resumo_banco.metas_mes_atual }} <small class="fs-6 fw-normal text-muted">mês atual</small></h4>
             <small class="text-muted">
-                Últ. atualização: <strong>{{ resumo_banco.ultima_meta_sync|date:"d/m/Y H:i"|default:"-" }}</strong>
+                Sync: <strong>{{ resumo_banco.ultima_meta_sync|date:"d/m H:i"|default:"-" }}</strong>
             </small>
         </div>
     </div>
-    <div class="col-xl-3 col-md-6">
+    <div class="col-xl-2 col-md-4 col-sm-6">
         <div class="card card-kpi p-3 bg-white border-start border-warning border-4 h-100">
-            <span class="text-muted small fw-bold">🛡️ Certificados CA (MTE/CAEPI)</span>
-            <h4 class="fw-bold text-dark mb-1 mt-1">{{ resumo_banco.cas_com_validade }} <small class="fs-6 fw-normal text-muted">/ {{ resumo_banco.total_cas }} CAs c/ validade</small></h4>
+            <span class="text-muted small fw-bold">🛡️ Certificados CA</span>
+            <h4 class="fw-bold text-dark mb-1 mt-1">{{ resumo_banco.cas_com_validade }} <small class="fs-6 fw-normal text-muted">/ {{ resumo_banco.total_cas }}</small></h4>
             <small class="text-muted">
-                Pendentes sem data: <strong class="{% if resumo_banco.cas_sem_validade > 0 %}text-danger{% else %}text-success{% endif %}">{{ resumo_banco.cas_sem_validade }}</strong>
+                Sem data: <strong class="{% if resumo_banco.cas_sem_validade > 0 %}text-danger{% else %}text-success{% endif %}">{{ resumo_banco.cas_sem_validade }}</strong>
             </small>
         </div>
     </div>
@@ -117,7 +134,7 @@
 <!-- Linha 2: Cards de Disparo Manual por Integração -->
 <div class="row g-3 mb-4">
     <!-- 1. Notas Fiscais Hardness -->
-    <div class="col-xl-3 col-md-6">
+    <div class="col-xl-4 col-md-6">
         <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
             <div>
                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -153,7 +170,7 @@
     </div>
 
     <!-- 2. Estoque e Itens Vendidos Hardness -->
-    <div class="col-xl-3 col-md-6">
+    <div class="col-xl-4 col-md-6">
         <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
             <div>
                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -182,8 +199,80 @@
         </div>
     </div>
 
-    <!-- 3. Metas PipeRun -->
-    <div class="col-xl-3 col-md-6">
+    <!-- 3. Financeiro Contas a Receber e Pagar (Hardness) -->
+    <div class="col-xl-4 col-md-6">
+        <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-danger">💰 Financeiro CR & CP (Hardness)</h6>
+                    {% if ultimos_por_tipo.FINANCEIRO_HARDNESS %}
+                        <span class="badge {% if ultimos_por_tipo.FINANCEIRO_HARDNESS.status == 'SUCESSO' %}bg-success-subtle text-success{% elif ultimos_por_tipo.FINANCEIRO_HARDNESS.status == 'ERRO' %}bg-danger-subtle text-danger{% else %}bg-warning-subtle text-dark{% endif %} border">
+                            {{ ultimos_por_tipo.FINANCEIRO_HARDNESS.status }}
+                        </span>
+                    {% endif %}
+                </div>
+                <p class="small text-muted mb-2">
+                    Sincroniza títulos de Contas a Receber (<code>fin001</code>) e Contas a Pagar (<code>fin002</code>) nas empresas do grupo. Em branco = últimos 30 dias.
+                </p>
+            </div>
+            <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="acao" value="financeiro_hardness">
+                <div class="row g-1 mb-2">
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-0" style="font-size: 0.72rem;">Início (opcional):</label>
+                        <input type="date" name="data_inicio" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-0" style="font-size: 0.72rem;">Fim (opcional):</label>
+                        <input type="date" name="data_fim" class="form-control form-control-sm">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-outline-danger btn-sm w-100 fw-semibold btn-sync-submit">
+                    🔄 Sincronizar Financeiro Agora
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 4. Orçamentos CRM (Hardness) -->
+    <div class="col-xl-4 col-md-6">
+        <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-secondary">📋 Orçamentos CRM (Hardness)</h6>
+                    {% if ultimos_por_tipo.ORCAMENTOS_HARDNESS %}
+                        <span class="badge {% if ultimos_por_tipo.ORCAMENTOS_HARDNESS.status == 'SUCESSO' %}bg-success-subtle text-success{% elif ultimos_por_tipo.ORCAMENTOS_HARDNESS.status == 'ERRO' %}bg-danger-subtle text-danger{% else %}bg-warning-subtle text-dark{% endif %} border">
+                            {{ ultimos_por_tipo.ORCAMENTOS_HARDNESS.status }}
+                        </span>
+                    {% endif %}
+                </div>
+                <p class="small text-muted mb-2">
+                    Busca propostas e cotações (<code>crm001GridPrincipalOrcamentos</code>) com status (Pendente, Finalizado, Perdido). Em branco = incremental (últimos 15 dias).
+                </p>
+            </div>
+            <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="acao" value="orcamentos_hardness">
+                <div class="row g-1 mb-2">
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-0" style="font-size: 0.72rem;">Início (opcional):</label>
+                        <input type="date" name="data_inicio" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-0" style="font-size: 0.72rem;">Fim (opcional):</label>
+                        <input type="date" name="data_fim" class="form-control form-control-sm">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-outline-secondary btn-sm w-100 fw-semibold btn-sync-submit">
+                    🔄 Sincronizar Orçamentos Agora
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 5. Metas PipeRun -->
+    <div class="col-xl-4 col-md-6">
         <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
             <div>
                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -212,8 +301,8 @@
         </div>
     </div>
 
-    <!-- 4. Vencimentos CA -->
-    <div class="col-xl-3 col-md-6">
+    <!-- 6. Vencimentos CA -->
+    <div class="col-xl-4 col-md-6">
         <div class="card sync-action-card bg-white p-3 h-100 d-flex flex-column justify-content-between">
             <div>
                 <div class="d-flex justify-content-between align-items-center mb-2">
