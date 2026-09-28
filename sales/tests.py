@@ -373,3 +373,91 @@ class FinanceiroAndOrcamentosSyncTests(TestCase):
         self.assertEqual(orc.valor_total, Decimal("3200.00"))
         self.assertEqual(orc.ipv, Decimal("1.7778"))
 
+    def test_dashboard_orcamentos_and_financeiro_views_and_calculations(self):
+        admin_user = User.objects.create_user(
+            username="admin_fin",
+            password="123",
+            role=User.Role.ADMINISTRADOR,
+        )
+        vendedor_user = User.objects.create_user(
+            username="ALINE",
+            password="123",
+            role=User.Role.VENDEDOR,
+            nome_vendedor_erp="ALINE",
+        )
+
+        # Cria orçamentos em Set/2026: R$ 3.000 realizado e R$ 1.000 pendente -> 75.0% realizado em R$
+        Orcamento.objects.create(
+            empresa="AMM EPIS",
+            numero_orcamento="ORC-1",
+            data_emissao=date(2026, 9, 10),
+            cliente_nome="CLIENTE GANHO",
+            vendedor_nome="ALINE",
+            valor_total=Decimal("3000.00"),
+            valor_custo=Decimal("1800.00"),
+            status="FINALIZADO",
+        )
+        Orcamento.objects.create(
+            empresa="AMM EPIS",
+            numero_orcamento="ORC-2",
+            data_emissao=date(2026, 9, 12),
+            cliente_nome="CLIENTE ABERTO",
+            vendedor_nome="ALINE",
+            valor_total=Decimal("1000.00"),
+            valor_custo=Decimal("600.00"),
+            status="PENDENTE",
+        )
+
+        # Cria Contas a Receber e Contas a Pagar em Set/2026
+        ContaReceber.objects.create(
+            empresa="AMM EPIS",
+            id_titulo_erp="CR-100",
+            numero_duplicata="100/1",
+            cliente_nome="CLIENTE GANHO",
+            data_emissao=date(2026, 9, 10),
+            data_vencimento=date(2026, 9, 20),
+            data_recebimento=date(2026, 9, 19),
+            valor_total=Decimal("3000.00"),
+            valor_recebido=Decimal("3000.00"),
+            valor_saldo=Decimal("0.00"),
+            portador="BOLETO SICREDI",
+            status="RECEBIDO",
+        )
+        ContaPagar.objects.create(
+            empresa="AMM EPIS",
+            id_titulo_erp="CP-200",
+            numero_duplicata="200/1",
+            fornecedor_nome="FORNECEDOR A",
+            centro_custo="COMPRAS/ESTOQUE",
+            grupo_conta="OPERACIONAL - COMPRA MERCADORIA",
+            data_emissao=date(2026, 9, 5),
+            data_vencimento=date(2026, 9, 18),
+            data_pagamento=date(2026, 9, 18),
+            valor_total=Decimal("1200.00"),
+            valor_pago=Decimal("1200.00"),
+            valor_saldo=Decimal("0.00"),
+            portador="BOLETO SICREDI",
+            status="PAGO",
+        )
+
+        # 1. Testa página de Orçamentos como Vendedor
+        self.client.force_login(vendedor_user)
+        resp_orc = self.client.get(reverse("dashboard_orcamentos") + "?mes=9&ano=2026")
+        self.assertEqual(resp_orc.status_code, 200)
+        self.assertEqual(resp_orc.context["kpis"]["qtd_total"], 2)
+        self.assertEqual(resp_orc.context["kpis"]["pct_realizado_valor"], "75.0%")
+
+        # Vendedor não acessa Financeiro (redireciona para dashboard_vendas)
+        resp_fin_vend = self.client.get(reverse("dashboard_financeiro"))
+        self.assertEqual(resp_fin_vend.status_code, 302)
+
+        # 2. Testa página Financeiro como Administrador
+        self.client.force_login(admin_user)
+        resp_fin = self.client.get(reverse("dashboard_financeiro") + "?mes=9&ano=2026&regime=CAIXA")
+        self.assertEqual(resp_fin.status_code, 200)
+        self.assertEqual(resp_fin.context["dre"]["lucro_liquido_raw"], 1800.0)
+        self.assertEqual(len(resp_fin.context["resumo_portadores"]), 1)
+        self.assertEqual(resp_fin.context["resumo_portadores"][0]["portador"], "BOLETO SICREDI")
+        self.assertEqual(resp_fin.context["resumo_portadores"][0]["saldo_liquido_conciliado"], 1800.0)
+
+

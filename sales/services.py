@@ -1040,10 +1040,10 @@ def sincronizar_orcamentos_hardness(
             flag_status = (_limpar_str(item.get("T003_Flag_Status_Orcamento"), max_len=10) or "").upper()
             flag_perdido = (_limpar_str(item.get("T003_Flag_Perdido"), max_len=10) or "").upper()
 
-            if flag_status == "C":
-                status_calc = "CANCELADO"
-            elif flag_perdido == "S":
+            if flag_perdido == "S":
                 status_calc = "PERDIDO"
+            elif flag_status == "C":
+                status_calc = "CANCELADO"
             elif flag_status == "F" or flag_perdido == "F":
                 status_calc = "FINALIZADO"
             else:

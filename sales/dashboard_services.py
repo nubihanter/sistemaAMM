@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.utils import PlotlyJSONEncoder
-from .models import MetaVendedor, Vendedor
+from .models import ContaPagar, ContaReceber, MetaVendedor, NotaFiscal, Orcamento, Vendedor
 from inventory.models import ItemVenda, ProdutoEPI
 
 USUARIO_PIPERUN_META_EMPRESA = "MARCELO NERIS"
@@ -887,3 +887,705 @@ def gerar_analise_clientes(
     ).drop(columns=["ordem_curva"])
 
     return kpis_carteira, grafico_status_html, grafico_matriz_html, df_tabela
+
+
+def gerar_dashboard_orcamentos(
+    mes_selecionado: int,
+    ano_selecionado: int,
+    vendedora_selecionada: str = "EMPRESA",
+    empresa_filtro: str = "TODAS",
+    status_filtro: str = "TODOS",
+    gerar_graficos: bool = True,
+):
+    """
+    Calcula os indicadores principais de Orçamentos do mês:
+    - Total de orçamentos no mês (R$ e quantidade)
+    - % de orçamentos realizados / ganhos (em R$ e em quantidade)
+    - Orçamentos em aberto (pendentes) e perdidos/cancelados (R$, % e quantidade)
+    - Ranking / conversão por vendedor e tabela de orçamentos do período.
+    """
+    qs = Orcamento.objects.filter(
+        data_emissao__year=ano_selecionado,
+        data_emissao__month=mes_selecionado,
+    )
+    if empresa_filtro and empresa_filtro != "TODAS":
+        qs = qs.filter(empresa=empresa_filtro)
+
+    registros_mes = list(
+        qs.values(
+            "numero_orcamento",
+            "empresa",
+            "data_emissao",
+            "cliente_nome",
+            "cidade",
+            "uf",
+            "vendedor_nome",
+            "valor_total",
+            "valor_custo",
+            "percentual_margem",
+            "ipv",
+            "status",
+            "flag_status",
+            "flag_perdido",
+            "motivo_perda",
+            "pedido_gerado",
+            "numero_nota",
+            "observacao",
+        )
+    )
+
+    kpis_vazios = {
+        "qtd_total": 0,
+        "valor_orcado": "R$ 0,00",
+        "valor_orcado_raw": 0.0,
+        "ticket_medio": "R$ 0,00",
+        "qtd_realizados": 0,
+        "valor_realizado": "R$ 0,00",
+        "valor_realizado_raw": 0.0,
+        "pct_realizado_valor": "0.0%",
+        "pct_realizado_valor_raw": 0.0,
+        "pct_realizado_qtd": "0.0%",
+        "qtd_pendentes": 0,
+        "valor_pendente": "R$ 0,00",
+        "pct_pendente_valor": "0.0%",
+        "qtd_perdidos": 0,
+        "valor_perdido": "R$ 0,00",
+        "pct_perdido_valor": "0.0%",
+        "margem_realizados_pct": "0.0%",
+        "lucro_bruto_realizados": "R$ 0,00",
+    }
+
+    if not registros_mes:
+        return kpis_vazios, "", "", [], []
+
+    df_all = pd.DataFrame(registros_mes)
+    df_all["valor_total"] = pd.to_numeric(df_all["valor_total"], errors="coerce").fillna(0.0).astype(float)
+    df_all["valor_custo"] = pd.to_numeric(df_all["valor_custo"], errors="coerce").fillna(0.0).astype(float)
+    df_all["percentual_margem"] = pd.to_numeric(df_all["percentual_margem"], errors="coerce").fillna(0.0).astype(float)
+    df_all["ipv"] = pd.to_numeric(df_all["ipv"], errors="coerce").fillna(0.0).astype(float)
+    df_all["vendedor_nome"] = (
+        df_all["vendedor_nome"]
+        .fillna("DESCONHECIDO")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .replace({"": "DESCONHECIDO", "NAN": "DESCONHECIDO", "NONE": "DESCONHECIDO"})
+    )
+    df_all["cliente_nome"] = (
+        df_all["cliente_nome"]
+        .fillna("CLIENTE NÃO IDENTIFICADO")
+        .astype(str)
+        .str.strip()
+        .replace({"": "CLIENTE NÃO IDENTIFICADO", "NAN": "CLIENTE NÃO IDENTIFICADO"})
+    )
+
+    # Normaliza status consolidado: FINALIZADO (Realizado), PENDENTE (Em Aberto), PERDIDO (Perdido/Cancelado)
+    flag_p = df_all["flag_perdido"].fillna("").astype(str).str.strip().str.upper()
+    st_raw = df_all["status"].fillna("PENDENTE").astype(str).str.strip().str.upper()
+    df_all["status_consolidado"] = np.select(
+        [
+            st_raw == "FINALIZADO",
+            (flag_p == "S") | st_raw.isin(["PERDIDO", "CANCELADO"]),
+        ],
+        ["FINALIZADO", "PERDIDO"],
+        default="PENDENTE",
+    )
+
+    # Filtra pela visão selecionada (EMPRESA ou Vendedor específico)
+    if vendedora_selecionada and vendedora_selecionada != "EMPRESA":
+        df_visao = df_all[df_all["vendedor_nome"] == vendedora_selecionada.strip().upper()].copy()
+    else:
+        df_visao = df_all.copy()
+
+    if df_visao.empty:
+        return kpis_vazios, "", "", [], []
+
+    qtd_total = len(df_visao)
+    valor_orcado = float(df_visao["valor_total"].sum())
+    ticket_medio = (valor_orcado / qtd_total) if qtd_total > 0 else 0.0
+
+    df_real = df_visao[df_visao["status_consolidado"] == "FINALIZADO"]
+    df_pend = df_visao[df_visao["status_consolidado"] == "PENDENTE"]
+    df_perd = df_visao[df_visao["status_consolidado"] == "PERDIDO"]
+
+    qtd_realizados = len(df_real)
+    valor_realizado = float(df_real["valor_total"].sum())
+    pct_realizado_valor = (valor_realizado / valor_orcado * 100.0) if valor_orcado > 0 else 0.0
+    pct_realizado_qtd = (qtd_realizados / qtd_total * 100.0) if qtd_total > 0 else 0.0
+
+    qtd_pendentes = len(df_pend)
+    valor_pendente = float(df_pend["valor_total"].sum())
+    pct_pendente_valor = (valor_pendente / valor_orcado * 100.0) if valor_orcado > 0 else 0.0
+
+    qtd_perdidos = len(df_perd)
+    valor_perdido = float(df_perd["valor_total"].sum())
+    pct_perdido_valor = (valor_perdido / valor_orcado * 100.0) if valor_orcado > 0 else 0.0
+
+    custo_realizados = float(df_real["valor_custo"].sum())
+    lucro_bruto_real = max(valor_realizado - custo_realizados, 0.0) if custo_realizados > 0 else 0.0
+    margem_real_pct = (
+        ((valor_realizado - custo_realizados) / valor_realizado * 100.0)
+        if (valor_realizado > 0 and custo_realizados > 0)
+        else 0.0
+    )
+
+    kpis = {
+        "qtd_total": qtd_total,
+        "valor_orcado": f"R$ {valor_orcado:,.2f}",
+        "valor_orcado_raw": valor_orcado,
+        "ticket_medio": f"R$ {ticket_medio:,.2f}",
+        "qtd_realizados": qtd_realizados,
+        "valor_realizado": f"R$ {valor_realizado:,.2f}",
+        "valor_realizado_raw": valor_realizado,
+        "pct_realizado_valor": f"{pct_realizado_valor:.1f}%",
+        "pct_realizado_valor_raw": pct_realizado_valor,
+        "pct_realizado_qtd": f"{pct_realizado_qtd:.1f}%",
+        "qtd_pendentes": qtd_pendentes,
+        "valor_pendente": f"R$ {valor_pendente:,.2f}",
+        "pct_pendente_valor": f"{pct_pendente_valor:.1f}%",
+        "qtd_perdidos": qtd_perdidos,
+        "valor_perdido": f"R$ {valor_perdido:,.2f}",
+        "pct_perdido_valor": f"{pct_perdido_valor:.1f}%",
+        "margem_realizados_pct": f"{margem_real_pct:.1f}%",
+        "lucro_bruto_realizados": f"R$ {lucro_bruto_real:,.2f}",
+    }
+
+    # Resumo por Vendedor (conversão financeira em R$ e quantidade)
+    resumo_vendedores = []
+    for vend, grp in df_visao.groupby("vendedor_nome"):
+        v_tot = float(grp["valor_total"].sum())
+        q_tot = len(grp)
+        g_real = grp[grp["status_consolidado"] == "FINALIZADO"]
+        g_pend = grp[grp["status_consolidado"] == "PENDENTE"]
+        g_perd = grp[grp["status_consolidado"] == "PERDIDO"]
+
+        v_real = float(g_real["valor_total"].sum())
+        q_real = len(g_real)
+        v_pend = float(g_pend["valor_total"].sum())
+        q_pend = len(g_pend)
+        v_perd = float(g_perd["valor_total"].sum())
+        q_perd = len(g_perd)
+
+        pct_val = (v_real / v_tot * 100.0) if v_tot > 0 else 0.0
+        pct_q = (q_real / q_tot * 100.0) if q_tot > 0 else 0.0
+
+        resumo_vendedores.append(
+            {
+                "vendedor_nome": vend,
+                "qtd_total": q_tot,
+                "valor_orcado": v_tot,
+                "qtd_realizados": q_real,
+                "valor_realizado": v_real,
+                "qtd_pendentes": q_pend,
+                "valor_pendente": v_pend,
+                "qtd_perdidos": q_perd,
+                "valor_perdido": v_perd,
+                "pct_realizado_valor": pct_val,
+                "pct_realizado_qtd": pct_q,
+            }
+        )
+    resumo_vendedores.sort(key=lambda r: r["valor_realizado"], reverse=True)
+
+    # Gráficos Plotly
+    grafico_status_html = ""
+    grafico_vendedores_html = ""
+
+    if gerar_graficos:
+        df_status_chart = pd.DataFrame(
+            [
+                {"Status": "Realizado (Ganho)", "Valor": valor_realizado, "Qtd": qtd_realizados},
+                {"Status": "Em Aberto (Pendente)", "Valor": valor_pendente, "Qtd": qtd_pendentes},
+                {"Status": "Perdido / Cancelado", "Valor": valor_perdido, "Qtd": qtd_perdidos},
+            ]
+        )
+        fig_st = px.bar(
+            df_status_chart,
+            x="Status",
+            y="Valor",
+            color="Status",
+            text_auto=".2s",
+            title=f"📊 Orçamentos no Mês por Status em R$ ({mes_selecionado:02d}/{ano_selecionado})",
+            labels={"Valor": "Valor Total (R$)", "Status": "Situação do Orçamento"},
+            color_discrete_map={
+                "Realizado (Ganho)": "#15803d",
+                "Em Aberto (Pendente)": "#f59e0b",
+                "Perdido / Cancelado": "#dc2626",
+            },
+        )
+        fig_st.update_layout(showlegend=False, height=340, margin=dict(t=45, b=20, l=20, r=20))
+        grafico_status_html = fig_to_html(fig_st)
+
+        if resumo_vendedores:
+            df_vend_chart = pd.DataFrame(resumo_vendedores).head(12)
+            fig_vend = go.Figure()
+            fig_vend.add_trace(
+                go.Bar(
+                    x=df_vend_chart["vendedor_nome"],
+                    y=df_vend_chart["valor_orcado"],
+                    name="Total Orçado (R$)",
+                    marker_color="#94a3b8",
+                )
+            )
+            fig_vend.add_trace(
+                go.Bar(
+                    x=df_vend_chart["vendedor_nome"],
+                    y=df_vend_chart["valor_realizado"],
+                    name="Realizado / Ganho (R$)",
+                    marker_color="#15803d",
+                    text=[f"{p:.1f}%" for p in df_vend_chart["pct_realizado_valor"]],
+                    textposition="outside",
+                )
+            )
+            fig_vend.update_layout(
+                barmode="group",
+                title="🎯 Orçado vs Realizado (R$) e % Conversão por Vendedor",
+                yaxis_title="Valor (R$)",
+                xaxis_title="Vendedor",
+                height=340,
+                margin=dict(t=45, b=30, l=20, r=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            grafico_vendedores_html = fig_to_html(fig_vend)
+
+    # Filtra a tabela detalhada se status_filtro foi escolhido
+    df_tab = df_visao.copy()
+    if status_filtro and status_filtro in ("FINALIZADO", "PENDENTE", "PERDIDO"):
+        df_tab = df_tab[df_tab["status_consolidado"] == status_filtro].copy()
+
+    df_tab["data_emissao_dt"] = pd.to_datetime(df_tab["data_emissao"])
+    df_tab = df_tab.sort_values(["data_emissao_dt", "numero_orcamento"], ascending=[False, False])
+    df_tab["data_str"] = df_tab["data_emissao_dt"].dt.strftime("%d/%m/%Y").fillna("-")
+    df_tab["data_iso"] = df_tab["data_emissao_dt"].dt.strftime("%Y-%m-%d").fillna("")
+
+    tabela_orcamentos = df_tab.to_dict(orient="records")
+    return kpis, grafico_status_html, grafico_vendedores_html, resumo_vendedores, tabela_orcamentos
+
+
+def _classificar_categoria_dre_cp(centro_custo: str, grupo_conta: str, subconta: str) -> str:
+    """
+    Agrupa um lançamento de Contas a Pagar nas linhas principais de apuração do Lucro Líquido (DRE Simplificado).
+    """
+    cc = (centro_custo or "").strip().upper()
+    gc = (grupo_conta or "").strip().upper()
+    sc = (subconta or "").strip().upper()
+    texto = f"{cc} | {gc} | {sc}"
+
+    if "COMPRA MERCADORIA" in texto or "MATERIA PRIMA" in texto or cc == "COMPRAS/ESTOQUE":
+        return "CUSTO_MERCADORIA"
+    if cc == "IMPOSTOS" or "IMPOSTO" in gc or "SIMPLES NACIONAL" in texto or "ICMS" in texto or "DARF" in texto:
+        return "IMPOSTOS_TAXAS"
+    if cc == "DIRETORIA" or "SOCIOS" in gc or "RETIRADA SOCIO" in texto or "PRO LABORE" in texto:
+        return "SOCIOS_DIRETORIA"
+    if cc == "VENDAS" or "COMISS" in texto or "FRETE SOBRE VENDAS" in texto or "VENDAS -" in gc:
+        return "DESPESAS_VENDAS"
+    return "DESPESAS_ADM_OPERACIONAL"
+
+
+def gerar_dashboard_financeiro(
+    mes_selecionado: int,
+    ano_selecionado: int,
+    empresa_filtro: str = "TODAS",
+    regime: str = "CAIXA",
+    portador_filtro: str = "TODOS",
+    gerar_graficos: bool = True,
+):
+    """
+    Calcula os indicadores principais da página Financeiro:
+    1. Cálculo do Lucro Líquido (DRE Simplificado pelo Regime de Caixa ou Competência/Vencimento)
+    2. Conciliação Bancária por Portador/Banco e listagem detalhada de Contas a Receber e Contas a Pagar.
+    """
+    regime_limpo = (regime or "CAIXA").strip().upper()
+    if regime_limpo not in ("CAIXA", "COMPETENCIA"):
+        regime_limpo = "CAIXA"
+
+    # Faturamento Bruto de Notas Fiscais no mês (referência comercial)
+    nf_qs = NotaFiscal.objects.exclude(status="CANCELADA").filter(
+        data_emissao__year=ano_selecionado,
+        data_emissao__month=mes_selecionado,
+    )
+    if empresa_filtro and empresa_filtro != "TODAS":
+        nf_qs = nf_qs.filter(empresa=empresa_filtro)
+    faturamento_nf_mes = sum(float(v or 0) for v in nf_qs.values_list("valor_total", flat=True))
+
+    # Base Contas a Receber e Contas a Pagar (excluindo canceladas)
+    cr_base = ContaReceber.objects.filter(cancelada=False).exclude(status="CANCELADO")
+    cp_base = ContaPagar.objects.filter(cancelada=False).exclude(status="CANCELADO")
+
+    if empresa_filtro and empresa_filtro != "TODAS":
+        cr_base = cr_base.filter(empresa=empresa_filtro)
+        cp_base = cp_base.filter(empresa=empresa_filtro)
+
+    # Lista de portadores disponíveis para filtro de Conciliação Bancária
+    portadores_cr = set(
+        p.strip().upper()
+        for p in cr_base.exclude(portador__isnull=True).order_by().values_list("portador", flat=True).distinct()
+        if p and p.strip()
+    )
+    portadores_cp = set(
+        p.strip().upper()
+        for p in cp_base.exclude(portador__isnull=True).order_by().values_list("portador", flat=True).distinct()
+        if p and p.strip()
+    )
+    portadores_disponiveis = sorted(portadores_cr | portadores_cp)
+
+    if portador_filtro and portador_filtro != "TODOS":
+        cr_base = cr_base.filter(portador__iexact=portador_filtro)
+        cp_base = cp_base.filter(portador__iexact=portador_filtro)
+
+    # No regime CAIXA: seleciona títulos com recebimento/pagamento no mês OU vencimento em aberto no mês (para conciliar)
+    # No regime COMPETENCIA: seleciona títulos com vencimento no mês
+    from django.db.models import Q
+
+    if regime_limpo == "CAIXA":
+        cr_qs = cr_base.filter(
+            Q(data_recebimento__year=ano_selecionado, data_recebimento__month=mes_selecionado)
+            | Q(data_vencimento__year=ano_selecionado, data_vencimento__month=mes_selecionado)
+        )
+        cp_qs = cp_base.filter(
+            Q(data_pagamento__year=ano_selecionado, data_pagamento__month=mes_selecionado)
+            | Q(data_vencimento__year=ano_selecionado, data_vencimento__month=mes_selecionado)
+        )
+    else:
+        cr_qs = cr_base.filter(
+            data_vencimento__year=ano_selecionado,
+            data_vencimento__month=mes_selecionado,
+        )
+        cp_qs = cp_base.filter(
+            data_vencimento__year=ano_selecionado,
+            data_vencimento__month=mes_selecionado,
+        )
+
+    cr_list = list(
+        cr_qs.values(
+            "id",
+            "id_titulo_erp",
+            "empresa",
+            "numero_documento",
+            "numero_duplicata",
+            "parcela",
+            "cliente_nome",
+            "vendedor_nome",
+            "data_emissao",
+            "data_vencimento",
+            "data_recebimento",
+            "valor_total",
+            "valor_recebido",
+            "valor_saldo",
+            "portador",
+            "subconta",
+            "grupo_conta",
+            "nosso_numero",
+            "status",
+        )
+    )
+    cp_list = list(
+        cp_qs.values(
+            "id",
+            "id_titulo_erp",
+            "empresa",
+            "numero_documento",
+            "numero_duplicata",
+            "parcela",
+            "fornecedor_nome",
+            "data_emissao",
+            "data_vencimento",
+            "data_pagamento",
+            "valor_total",
+            "valor_pago",
+            "valor_saldo",
+            "centro_custo",
+            "subconta",
+            "grupo_conta",
+            "portador",
+            "status",
+        )
+    )
+
+    # Processamento Contas a Receber
+    entradas_realizadas_caixa = 0.0
+    entradas_previstas_venc = 0.0
+    saldo_a_receber_mes = 0.0
+    saldo_vencido_receber_mes = 0.0
+    qtd_cr_recebidos = 0
+    qtd_cr_pendentes = 0
+
+    conciliacao_portador_map = {}
+
+    def _garantir_portador(nome_p):
+        chave = (nome_p or "NÃO INFORMADO").strip().upper() or "NÃO INFORMADO"
+        if chave not in conciliacao_portador_map:
+            conciliacao_portador_map[chave] = {
+                "portador": chave,
+                "qtd_cr_baixados": 0,
+                "entradas_recebidas": 0.0,
+                "entradas_a_receber": 0.0,
+                "qtd_cp_baixados": 0,
+                "saidas_pagas": 0.0,
+                "saidas_a_pagar": 0.0,
+                "saldo_liquido_conciliado": 0.0,
+            }
+        return conciliacao_portador_map[chave]
+
+    tabela_cr = []
+    for item in cr_list:
+        v_tot = float(item["valor_total"] or 0.0)
+        v_rec = float(item["valor_recebido"] or 0.0)
+        v_sal = float(item["valor_saldo"] or 0.0)
+        dt_venc = item["data_vencimento"]
+        dt_rec = item["data_recebimento"]
+        st = item["status"]
+
+        venc_no_mes = bool(dt_venc and dt_venc.year == ano_selecionado and dt_venc.month == mes_selecionado)
+        rec_no_mes = bool(dt_rec and dt_rec.year == ano_selecionado and dt_rec.month == mes_selecionado)
+
+        val_efetivo_rec = v_rec if v_rec > 0 else (v_tot if st == "RECEBIDO" and v_sal <= 0 else 0.0)
+        p_info = _garantir_portador(item.get("portador"))
+
+        if venc_no_mes:
+            entradas_previstas_venc += v_tot
+            if st != "RECEBIDO":
+                saldo_aberto = v_sal if v_sal > 0 else v_tot
+                saldo_a_receber_mes += saldo_aberto
+                p_info["entradas_a_receber"] += saldo_aberto
+                qtd_cr_pendentes += 1
+                if st == "VENCIDO":
+                    saldo_vencido_receber_mes += saldo_aberto
+
+        if (regime_limpo == "CAIXA" and rec_no_mes and st == "RECEBIDO") or (
+            regime_limpo == "COMPETENCIA" and venc_no_mes and st == "RECEBIDO"
+        ):
+            entradas_realizadas_caixa += val_efetivo_rec
+            qtd_cr_recebidos += 1
+            p_info["qtd_cr_baixados"] += 1
+            p_info["entradas_recebidas"] += val_efetivo_rec
+
+        # Filtra o que exibir na tabela conforme o regime selecionado
+        if regime_limpo == "CAIXA" and not (rec_no_mes or (venc_no_mes and st != "RECEBIDO")):
+            continue
+
+        tabela_cr.append(
+            {
+                "id": item["id"],
+                "id_titulo_erp": item["id_titulo_erp"],
+                "empresa": item["empresa"],
+                "documento": item["numero_duplicata"] or item["numero_documento"] or item["id_titulo_erp"],
+                "parcela": item["parcela"] or "-",
+                "cliente_nome": item["cliente_nome"] or "CLIENTE NÃO IDENTIFICADO",
+                "portador": (item["portador"] or "NÃO INFORMADO").strip().upper(),
+                "nosso_numero": item["nosso_numero"] or "-",
+                "data_venc_str": dt_venc.strftime("%d/%m/%Y") if dt_venc else "-",
+                "data_venc_iso": dt_venc.strftime("%Y-%m-%d") if dt_venc else "",
+                "data_rec_str": dt_rec.strftime("%d/%m/%Y") if dt_rec else "-",
+                "data_rec_iso": dt_rec.strftime("%Y-%m-%d") if dt_rec else "",
+                "valor_total": v_tot,
+                "valor_recebido": val_efetivo_rec if st == "RECEBIDO" else v_rec,
+                "valor_saldo": 0.0 if st == "RECEBIDO" else (v_sal if v_sal > 0 else v_tot),
+                "status": st,
+            }
+        )
+
+    # Processamento Contas a Pagar e DRE Simplificado
+    saidas_realizadas_caixa = 0.0
+    saidas_previstas_venc = 0.0
+    saldo_a_pagar_mes = 0.0
+    saldo_vencido_pagar_mes = 0.0
+    qtd_cp_pagos = 0
+    qtd_cp_pendentes = 0
+
+    dre_categorias = {
+        "CUSTO_MERCADORIA": 0.0,
+        "IMPOSTOS_TAXAS": 0.0,
+        "DESPESAS_VENDAS": 0.0,
+        "DESPESAS_ADM_OPERACIONAL": 0.0,
+        "SOCIOS_DIRETORIA": 0.0,
+    }
+
+    tabela_cp = []
+    for item in cp_list:
+        v_tot = float(item["valor_total"] or 0.0)
+        v_pag = float(item["valor_pago"] or 0.0)
+        v_sal = float(item["valor_saldo"] or 0.0)
+        dt_venc = item["data_vencimento"]
+        dt_pag = item["data_pagamento"]
+        st = item["status"]
+
+        venc_no_mes = bool(dt_venc and dt_venc.year == ano_selecionado and dt_venc.month == mes_selecionado)
+        pag_no_mes = bool(dt_pag and dt_pag.year == ano_selecionado and dt_pag.month == mes_selecionado)
+
+        val_efetivo_pag = v_pag if v_pag > 0 else (v_tot if st == "PAGO" and v_sal <= 0 else 0.0)
+        cat_dre = _classificar_categoria_dre_cp(item.get("centro_custo"), item.get("grupo_conta"), item.get("subconta"))
+        p_info = _garantir_portador(item.get("portador"))
+
+        if venc_no_mes:
+            saidas_previstas_venc += v_tot
+            if st != "PAGO":
+                saldo_aberto = v_sal if v_sal > 0 else v_tot
+                saldo_a_pagar_mes += saldo_aberto
+                p_info["saidas_a_pagar"] += saldo_aberto
+                qtd_cp_pendentes += 1
+                if st == "VENCIDO":
+                    saldo_vencido_pagar_mes += saldo_aberto
+
+        # Para apuração do DRE:
+        # No regime CAIXA considera o que foi efetivamente PAGO no mês.
+        # No regime COMPETENCIA considera todos os títulos com vencimento no mês (valor_total).
+        if regime_limpo == "CAIXA":
+            if pag_no_mes and st == "PAGO":
+                saidas_realizadas_caixa += val_efetivo_pag
+                qtd_cp_pagos += 1
+                p_info["qtd_cp_baixados"] += 1
+                p_info["saidas_pagas"] += val_efetivo_pag
+                dre_categorias[cat_dre] += val_efetivo_pag
+        else:
+            if venc_no_mes:
+                dre_categorias[cat_dre] += v_tot
+                if st == "PAGO":
+                    saidas_realizadas_caixa += val_efetivo_pag
+                    qtd_cp_pagos += 1
+                    p_info["qtd_cp_baixados"] += 1
+                    p_info["saidas_pagas"] += val_efetivo_pag
+
+        if regime_limpo == "CAIXA" and not (pag_no_mes or (venc_no_mes and st != "PAGO")):
+            continue
+
+        tabela_cp.append(
+            {
+                "id": item["id"],
+                "id_titulo_erp": item["id_titulo_erp"],
+                "empresa": item["empresa"],
+                "documento": item["numero_duplicata"] or item["numero_documento"] or item["id_titulo_erp"],
+                "parcela": item["parcela"] or "-",
+                "fornecedor_nome": item["fornecedor_nome"] or "FORNECEDOR NÃO IDENTIFICADO",
+                "grupo_conta": item["grupo_conta"] or item["subconta"] or item["centro_custo"] or "-",
+                "centro_custo": item["centro_custo"] or "-",
+                "portador": (item["portador"] or "NÃO INFORMADO").strip().upper(),
+                "data_venc_str": dt_venc.strftime("%d/%m/%Y") if dt_venc else "-",
+                "data_venc_iso": dt_venc.strftime("%Y-%m-%d") if dt_venc else "",
+                "data_pag_str": dt_pag.strftime("%d/%m/%Y") if dt_pag else "-",
+                "data_pag_iso": dt_pag.strftime("%Y-%m-%d") if dt_pag else "",
+                "valor_total": v_tot,
+                "valor_pago": val_efetivo_pag if st == "PAGO" else max(v_pag, 0.0),
+                "valor_saldo": 0.0 if st == "PAGO" else (v_sal if v_sal > 0 else v_tot),
+                "status": st,
+            }
+        )
+
+    # Consolida tabela de Conciliação por Portador
+    resumo_portadores = []
+    for p_data in conciliacao_portador_map.values():
+        p_data["saldo_liquido_conciliado"] = p_data["entradas_recebidas"] - p_data["saidas_pagas"]
+        if (
+            p_data["entradas_recebidas"] > 0
+            or p_data["saidas_pagas"] > 0
+            or p_data["entradas_a_receber"] > 0
+            or p_data["saidas_a_pagar"] > 0
+        ):
+            resumo_portadores.append(p_data)
+    resumo_portadores.sort(
+        key=lambda x: (x["entradas_recebidas"] + x["saidas_pagas"] + x["entradas_a_receber"] + x["saidas_a_pagar"]),
+        reverse=True,
+    )
+
+    # Cálculo do DRE Simplificado (Lucro Líquido)
+    receita_base_dre = entradas_realizadas_caixa if regime_limpo == "CAIXA" else entradas_previstas_venc
+    saidas_base_dre = sum(dre_categorias.values())
+
+    custo_mercadoria = dre_categorias["CUSTO_MERCADORIA"]
+    impostos_taxas = dre_categorias["IMPOSTOS_TAXAS"]
+    despesas_vendas = dre_categorias["DESPESAS_VENDAS"]
+    despesas_adm = dre_categorias["DESPESAS_ADM_OPERACIONAL"]
+    socios_diretoria = dre_categorias["SOCIOS_DIRETORIA"]
+
+    margem_bruta_fin = receita_base_dre - custo_mercadoria
+    lucro_operacional = margem_bruta_fin - impostos_taxas - despesas_vendas - despesas_adm
+    lucro_liquido_final = lucro_operacional - socios_diretoria
+
+    margem_operacional_pct = (lucro_operacional / receita_base_dre * 100.0) if receita_base_dre > 0 else 0.0
+    margem_liquida_pct = (lucro_liquido_final / receita_base_dre * 100.0) if receita_base_dre > 0 else 0.0
+
+    dre = {
+        "regime": regime_limpo,
+        "faturamento_nf": f"R$ {faturamento_nf_mes:,.2f}",
+        "receita_base": f"R$ {receita_base_dre:,.2f}",
+        "receita_base_raw": receita_base_dre,
+        "custo_mercadoria": f"R$ {custo_mercadoria:,.2f}",
+        "margem_bruta": f"R$ {margem_bruta_fin:,.2f}",
+        "margem_bruta_positiva": margem_bruta_fin >= 0,
+        "impostos_taxas": f"R$ {impostos_taxas:,.2f}",
+        "despesas_vendas": f"R$ {despesas_vendas:,.2f}",
+        "despesas_adm": f"R$ {despesas_adm:,.2f}",
+        "lucro_operacional": f"R$ {lucro_operacional:,.2f}",
+        "lucro_operacional_raw": lucro_operacional,
+        "lucro_operacional_positivo": lucro_operacional >= 0,
+        "margem_operacional_pct": f"{margem_operacional_pct:.1f}%",
+        "socios_diretoria": f"R$ {socios_diretoria:,.2f}",
+        "saidas_totais": f"R$ {saidas_base_dre:,.2f}",
+        "saidas_totais_raw": saidas_base_dre,
+        "lucro_liquido": f"R$ {lucro_liquido_final:,.2f}",
+        "lucro_liquido_raw": lucro_liquido_final,
+        "lucro_liquido_positivo": lucro_liquido_final >= 0,
+        "margem_liquida_pct": f"{margem_liquida_pct:.1f}%",
+    }
+
+    kpis = {
+        "entradas_recebidas": f"R$ {entradas_realizadas_caixa:,.2f}",
+        "entradas_previstas": f"R$ {entradas_previstas_venc:,.2f}",
+        "saldo_a_receber": f"R$ {saldo_a_receber_mes:,.2f}",
+        "saldo_vencido_receber": f"R$ {saldo_vencido_receber_mes:,.2f}",
+        "qtd_cr_recebidos": qtd_cr_recebidos,
+        "qtd_cr_pendentes": qtd_cr_pendentes,
+        "saidas_pagas": f"R$ {saidas_realizadas_caixa:,.2f}",
+        "saidas_previstas": f"R$ {saidas_previstas_venc:,.2f}",
+        "saldo_a_pagar": f"R$ {saldo_a_pagar_mes:,.2f}",
+        "saldo_vencido_pagar": f"R$ {saldo_vencido_pagar_mes:,.2f}",
+        "qtd_cp_pagos": qtd_cp_pagos,
+        "qtd_cp_pendentes": qtd_cp_pendentes,
+        "lucro_liquido": dre["lucro_liquido"],
+        "lucro_liquido_positivo": dre["lucro_liquido_positivo"],
+        "margem_liquida_pct": dre["margem_liquida_pct"],
+        "lucro_operacional": dre["lucro_operacional"],
+        "margem_operacional_pct": dre["margem_operacional_pct"],
+    }
+
+    grafico_dre_html = ""
+    if gerar_graficos:
+        df_dre_chart = pd.DataFrame(
+            [
+                {"Categoria": "Entradas / Receitas", "Valor": receita_base_dre, "Cor": "#15803d"},
+                {"Categoria": "Fornecedores (Mercadoria)", "Valor": custo_mercadoria, "Cor": "#dc2626"},
+                {"Categoria": "Impostos & Taxas", "Valor": impostos_taxas, "Cor": "#ea580c"},
+                {"Categoria": "Vendas & Folha", "Valor": despesas_vendas, "Cor": "#d97706"},
+                {"Categoria": "Adm. & Operacional", "Valor": despesas_adm, "Cor": "#64748b"},
+                {"Categoria": "Sócios / Diretoria", "Valor": socios_diretoria, "Cor": "#475569"},
+                {
+                    "Categoria": "Lucro Líquido",
+                    "Valor": lucro_liquido_final,
+                    "Cor": "#0284c7" if lucro_liquido_final >= 0 else "#b91c1c",
+                },
+            ]
+        )
+        fig_dre = px.bar(
+            df_dre_chart,
+            x="Categoria",
+            y="Valor",
+            color="Cor",
+            color_discrete_map="identity",
+            text_auto=".2s",
+            title=f"💰 Composição do Resultado & Lucro Líquido ({mes_selecionado:02d}/{ano_selecionado} - {regime_limpo})",
+            labels={"Valor": "Valor (R$)", "Categoria": ""},
+        )
+        fig_dre.update_layout(showlegend=False, height=350, margin=dict(t=45, b=25, l=20, r=20))
+        grafico_dre_html = fig_to_html(fig_dre)
+
+    tabela_cr.sort(key=lambda r: (r["data_rec_iso"] or r["data_venc_iso"], r["documento"]), reverse=True)
+    tabela_cp.sort(key=lambda r: (r["data_pag_iso"] or r["data_venc_iso"], r["documento"]), reverse=True)
+
+    return (
+        kpis,
+        dre,
+        grafico_dre_html,
+        resumo_portadores,
+        tabela_cr,
+        tabela_cp,
+        portadores_disponiveis,
+    )

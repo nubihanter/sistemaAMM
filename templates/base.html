@@ -79,6 +79,17 @@
                     <li class="nav-item">
                         {% if request.user.is_compras or request.user.is_almoxarifado %}
                             <span class="nav-link px-3 disabled nav-tab-disabled" aria-disabled="true" title="Aba desativada para o perfil {{ request.user.get_role_display }}">
+                                🔒 Orçamentos
+                            </span>
+                        {% else %}
+                            <a class="nav-link px-3 {% if request.resolver_match.url_name == 'dashboard_orcamentos' %}active{% endif %}" href="{% url 'dashboard_orcamentos' %}">
+                                📋 Orçamentos
+                            </a>
+                        {% endif %}
+                    </li>
+                    <li class="nav-item">
+                        {% if request.user.is_compras or request.user.is_almoxarifado %}
+                            <span class="nav-link px-3 disabled nav-tab-disabled" aria-disabled="true" title="Aba desativada para o perfil {{ request.user.get_role_display }}">
                                 🔒 Análise de Clientes
                             </span>
                         {% else %}
@@ -87,6 +98,13 @@
                             </a>
                         {% endif %}
                     </li>
+                    {% if request.user.is_admin or request.user.is_supervisor %}
+                    <li class="nav-item">
+                        <a class="nav-link px-3 {% if request.resolver_match.url_name == 'dashboard_financeiro' %}active{% endif %}" href="{% url 'dashboard_financeiro' %}">
+                            💰 Financeiro
+                        </a>
+                    </li>
+                    {% endif %}
                     <li class="nav-item">
                         <a class="nav-link px-3 {% if request.resolver_match.url_name == 'dashboard_estoque' %}active{% endif %}" href="{% url 'dashboard_estoque' %}">
                             📦 Estoque & Compras

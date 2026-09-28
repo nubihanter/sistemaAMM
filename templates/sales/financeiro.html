@@ -1,0 +1,559 @@
+{% extends 'base.html' %}
+
+{% block title %}Financeiro & Conciliação - AMM{% endblock %}
+
+{% block extra_head %}
+<style>
+    .card-metric {
+        border-radius: 10px;
+        border: none;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+    .table-matrix-scroll {
+        max-height: 55vh;
+        overflow: auto;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        position: relative;
+        background-color: #ffffff;
+    }
+    .table-sticky thead th {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background-color: #1e293b !important;
+        color: #ffffff !important;
+        font-size: 0.77rem;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        vertical-align: middle;
+        white-space: nowrap;
+        border-bottom: 2px solid #0f172a !important;
+    }
+    .table-sticky tbody td {
+        font-size: 0.83rem;
+        vertical-align: middle;
+        background-color: #ffffff;
+    }
+    .table-sticky tbody tr:hover td {
+        background-color: #f1f5f9 !important;
+    }
+    .row-conciliado td {
+        background-color: #f0fdf4 !important;
+    }
+    .dre-table td {
+        padding: 0.55rem 0.75rem;
+        font-size: 0.88rem;
+    }
+    .dre-row-subtotal {
+        background-color: #f8fafc;
+        font-weight: 700;
+    }
+    .dre-row-total {
+        background-color: #0f172a;
+        color: #ffffff;
+        font-weight: 700;
+        font-size: 0.95rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Cabeçalho -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h2 class="fw-bold text-primary mb-0">💰 Financeiro — Lucro Líquido & Conciliação Bancária</h2>
+        <small class="text-muted">
+            Empresa: <strong>{{ empresa_filtro }}</strong> |
+            Regime: <strong>{% if regime == 'CAIXA' %}Caixa (Data de Recebimento / Pagamento){% else %}Competência (Data de Vencimento){% endif %}</strong> |
+            Portador: <strong>{{ portador_filtro }}</strong> |
+            Período: <strong>{{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }}</strong>
+        </small>
+    </div>
+    <div class="d-flex flex-wrap gap-2 no-print">
+        {% if request.user.is_admin %}
+        <form method="post" action="{% url 'disparar_sincronizacao' %}" class="m-0">
+            {% csrf_token %}
+            <input type="hidden" name="acao" value="financeiro_hardness">
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <button type="submit" class="btn btn-outline-secondary btn-sm fw-semibold shadow-sm" title="Sincronizar Contas a Receber e Contas a Pagar no Hardness">
+                🔄 Sincronizar Financeiro (CR/CP)
+            </button>
+        </form>
+        {% endif %}
+        <button type="button" onclick="window.print()" class="btn btn-outline-dark btn-sm fw-semibold shadow-sm">
+            🖨️ Imprimir / PDF
+        </button>
+    </div>
+</div>
+
+<!-- Barra de Filtros -->
+<div class="card card-kpi p-3 mb-4 bg-white no-print">
+    <form method="get" class="row g-3 align-items-end">
+        <div class="col-lg-2 col-md-4 col-6">
+            <label for="id_empresa" class="form-label small fw-bold text-muted mb-1">🏢 Empresa:</label>
+            <select id="id_empresa" name="empresa" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODAS" {% if empresa_filtro == 'TODAS' %}selected{% endif %}>Todas (Consolidado)</option>
+                {% for emp in empresas_disponiveis %}
+                <option value="{{ emp }}" {% if empresa_filtro == emp %}selected{% endif %}>{{ emp }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-3 col-md-4 col-6">
+            <label for="id_regime" class="form-label small fw-bold text-muted mb-1">⚖️ Regime de Apuração:</label>
+            <select id="id_regime" name="regime" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="CAIXA" {% if regime == 'CAIXA' %}selected{% endif %}>💵 Regime de Caixa (Baixas no Mês)</option>
+                <option value="COMPETENCIA" {% if regime == 'COMPETENCIA' %}selected{% endif %}>📅 Por Vencimento no Mês</option>
+            </select>
+        </div>
+
+        <div class="col-lg-3 col-md-4 col-12">
+            <label for="id_portador" class="form-label small fw-bold text-muted mb-1">🏦 Portador / Banco (Conciliação):</label>
+            <select id="id_portador" name="portador" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODOS" {% if portador_filtro == 'TODOS' %}selected{% endif %}>Todos os Portadores / Bancos</option>
+                {% for port in portadores_disponiveis %}
+                <option value="{{ port }}" {% if portador_filtro == port %}selected{% endif %}>{{ port }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-2 col-md-4 col-6">
+            <label for="id_mes" class="form-label small fw-bold text-muted mb-1">📅 Mês:</label>
+            <select id="id_mes" name="mes" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for num, nome in meses %}
+                <option value="{{ num }}" {% if mes_selecionado == num %}selected{% endif %}>
+                    {{ num|stringformat:"02d" }} - {{ nome }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-1 col-md-4 col-6">
+            <label for="id_ano" class="form-label small fw-bold text-muted mb-1">📆 Ano:</label>
+            <select id="id_ano" name="ano" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for a in anos %}
+                <option value="{{ a }}" {% if ano_selecionado == a %}selected{% endif %}>{{ a }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-1 col-md-4 col-12">
+            <button type="submit" class="btn btn-primary btn-sm w-100 fw-semibold">Filtrar</button>
+        </div>
+    </form>
+</div>
+
+<!-- Linha de KPIs Principais -->
+<div class="row g-3 mb-4">
+    <!-- 1. Entradas / Contas a Receber -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-metric p-3 bg-white border-start border-success border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">🟢 Entradas Recebidas (CR)</span>
+                <span class="badge bg-success-subtle text-success border">{{ kpis.qtd_cr_recebidos }} baixados</span>
+            </div>
+            <h4 class="fw-bold text-success mb-1 mt-1">{{ kpis.entradas_recebidas }}</h4>
+            <small class="text-muted">
+                A receber no mês: <strong>{{ kpis.saldo_a_receber }}</strong> ({{ kpis.qtd_cr_pendentes }} títulos)
+            </small>
+        </div>
+    </div>
+
+    <!-- 2. Saídas / Contas a Pagar -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-metric p-3 bg-white border-start border-danger border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">🔴 Saídas Pagas (CP)</span>
+                <span class="badge bg-danger-subtle text-danger border">{{ kpis.qtd_cp_pagos }} pagos</span>
+            </div>
+            <h4 class="fw-bold text-danger mb-1 mt-1">{{ kpis.saidas_pagas }}</h4>
+            <small class="text-muted">
+                A pagar no mês: <strong>{{ kpis.saldo_a_pagar }}</strong> ({{ kpis.qtd_cp_pendentes }} títulos)
+            </small>
+        </div>
+    </div>
+
+    <!-- 3. Lucro Operacional (Antes de Sócios) -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-metric p-3 bg-white border-start border-info border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">📈 Resultado Operacional</span>
+                <span class="badge bg-info-subtle text-info-emphasis border">Margem {{ kpis.margem_operacional_pct }}</span>
+            </div>
+            <h4 class="fw-bold {% if dre.lucro_operacional_positivo %}text-primary{% else %}text-danger{% endif %} mb-1 mt-1">
+                {{ kpis.lucro_operacional }}
+            </h4>
+            <small class="text-muted">Antes de retiradas de sócios / pró-labore</small>
+        </div>
+    </div>
+
+    <!-- 4. Lucro Líquido do Mês -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-metric p-3 bg-white border-start {% if kpis.lucro_liquido_positivo %}border-primary{% else %}border-warning{% endif %} border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">💎 Lucro Líquido ({{ dre.regime }})</span>
+                <span class="badge {% if kpis.lucro_liquido_positivo %}bg-primary{% else %}bg-danger{% endif %}">
+                    {{ kpis.margem_liquida_pct }}
+                </span>
+            </div>
+            <h4 class="fw-bold {% if kpis.lucro_liquido_positivo %}text-success{% else %}text-danger{% endif %} mb-1 mt-1">
+                {{ kpis.lucro_liquido }}
+            </h4>
+            <small class="text-muted">Resultado líquido final apurado no mês</small>
+        </div>
+    </div>
+</div>
+
+<!-- Seção 1: Apuração do Lucro Líquido (DRE Simplificado) + Gráfico -->
+<div class="row g-3 mb-4">
+    <div class="col-lg-5">
+        <div class="card card-kpi p-3 bg-white h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="fw-bold mb-0">🧮 Apuração do Lucro Líquido ({{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }})</h5>
+                <span class="badge bg-dark">{{ dre.regime }}</span>
+            </div>
+            <small class="text-muted d-block mb-3">
+                Faturamento comercial (NFs emitidas no mês): <strong>{{ dre.faturamento_nf }}</strong>
+            </small>
+            <div class="table-responsive">
+                <table class="table table-bordered dre-table mb-0 align-middle">
+                    <tbody>
+                        <tr>
+                            <td class="fw-bold text-success">(+) Entradas / Receitas Apuradas (CR)</td>
+                            <td class="text-end fw-bold text-success">{{ dre.receita_base }}</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">(-) Fornecedores / Compra de Mercadoria</td>
+                            <td class="text-end text-danger">- {{ dre.custo_mercadoria }}</td>
+                        </tr>
+                        <tr class="dre-row-subtotal">
+                            <td>(=) Margem Bruta Financeira</td>
+                            <td class="text-end {% if dre.margem_bruta_positiva %}text-primary{% else %}text-danger{% endif %}">
+                                {{ dre.margem_bruta }}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">(-) Impostos e Taxas (Simples, ICMS, DARF...)</td>
+                            <td class="text-end text-danger">- {{ dre.impostos_taxas }}</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">(-) Despesas Comerciais, Vendas & Folha</td>
+                            <td class="text-end text-danger">- {{ dre.despesas_vendas }}</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">(-) Despesas Administrativas & Operacionais</td>
+                            <td class="text-end text-danger">- {{ dre.despesas_adm }}</td>
+                        </tr>
+                        <tr class="dre-row-subtotal">
+                            <td>(=) Lucro Operacional ({{ dre.margem_operacional_pct }})</td>
+                            <td class="text-end {% if dre.lucro_operacional_positivo %}text-success{% else %}text-danger{% endif %}">
+                                {{ dre.lucro_operacional }}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">(-) Sócios / Pró-Labore / Retiradas</td>
+                            <td class="text-end text-danger">- {{ dre.socios_diretoria }}</td>
+                        </tr>
+                        <tr class="dre-row-total">
+                            <td>(=) LUCRO LÍQUIDO FINAL ({{ dre.margem_liquida_pct }})</td>
+                            <td class="text-end">{{ dre.lucro_liquido }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-7">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_dre %}
+                {{ grafico_dre|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem movimentação financeira para o período.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Seção 2: Resumo de Conciliação Bancária por Portador / Banco -->
+<div class="card card-kpi p-4 bg-white mb-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div>
+            <h5 class="fw-bold mb-0">🏦 Conciliação Bancária por Portador / Forma de Pagamento</h5>
+            <small class="text-muted">Clique em um Portador para filtrar os lançamentos de entrada e saída abaixo e bater com o extrato bancário.</small>
+        </div>
+        {% if portador_filtro != 'TODOS' %}
+        <a href="{% url 'dashboard_financeiro' %}?empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador=TODOS&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
+           class="btn btn-outline-secondary btn-sm no-print">
+            Limpar Filtro de Portador ({{ portador_filtro }})
+        </a>
+        {% endif %}
+    </div>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th>Portador / Banco</th>
+                    <th class="text-center">Títulos Baixados (CR / CP)</th>
+                    <th class="text-end">Entradas Recebidas (R$)</th>
+                    <th class="text-end">Saídas Pagas (R$)</th>
+                    <th class="text-end">Saldo Líquido Realizado (R$)</th>
+                    <th class="text-end">A Receber no Mês (R$)</th>
+                    <th class="text-end">A Pagar no Mês (R$)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rp in resumo_portadores %}
+                <tr class="{% if portador_filtro == rp.portador %}table-primary{% endif %}">
+                    <td class="fw-bold">
+                        <a href="{% url 'dashboard_financeiro' %}?empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador={{ rp.portador|urlencode }}&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
+                           class="text-decoration-none text-dark">
+                            🏦 {{ rp.portador }}
+                        </a>
+                    </td>
+                    <td class="text-center">
+                        <span class="badge bg-success-subtle text-success border">{{ rp.qtd_cr_baixados }} CR</span>
+                        <span class="badge bg-danger-subtle text-danger border ms-1">{{ rp.qtd_cp_baixados }} CP</span>
+                    </td>
+                    <td class="text-end fw-semibold text-success">R$ {{ rp.entradas_recebidas|floatformat:2 }}</td>
+                    <td class="text-end fw-semibold text-danger">R$ {{ rp.saidas_pagas|floatformat:2 }}</td>
+                    <td class="text-end fw-bold {% if rp.saldo_liquido_conciliado >= 0 %}text-primary{% else %}text-danger{% endif %}">
+                        R$ {{ rp.saldo_liquido_conciliado|floatformat:2 }}
+                    </td>
+                    <td class="text-end text-muted">R$ {{ rp.entradas_a_receber|floatformat:2 }}</td>
+                    <td class="text-end text-muted">R$ {{ rp.saidas_a_pagar|floatformat:2 }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-3">Nenhuma movimentação encontrada para os filtros selecionados.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Seção 3: Tabelas de Lançamentos para Conciliação Bancária (CR e CP) -->
+<div class="card card-kpi p-4 bg-white mb-5">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div>
+            <h5 class="fw-bold mb-0">📑 Lançamentos do Período para Conciliação Bancária</h5>
+            <small class="text-muted">
+                Marque a coluna <strong>✓ Conciliado</strong> conforme conferir cada baixa com o extrato bancário.
+            </small>
+        </div>
+        <div class="d-flex align-items-center gap-2 no-print">
+            <span id="resumoConciliacaoManual" class="badge bg-success-subtle text-success border px-3 py-2">
+                0 marcados na tela (R$ 0,00)
+            </span>
+            <button type="button" id="btnLimparConciliados" class="btn btn-outline-secondary btn-sm">
+                Limpar Marcações
+            </button>
+        </div>
+    </div>
+
+    <!-- Abas CR / CP -->
+    <ul class="nav nav-tabs mb-3" id="finTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active fw-bold" id="cr-tab" data-bs-toggle="tab" data-bs-target="#cr-pane" type="button" role="tab">
+                🟢 Contas a Receber / Entradas ({{ tabela_cr|length }})
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link fw-bold" id="cp-tab" data-bs-toggle="tab" data-bs-target="#cp-pane" type="button" role="tab">
+                🔴 Contas a Pagar / Saídas ({{ tabela_cp|length }})
+            </button>
+        </li>
+    </ul>
+
+    <div class="tab-content" id="finTabsContent">
+        <!-- Aba 1: Contas a Receber -->
+        <div class="tab-pane fade show active" id="cr-pane" role="tabpanel">
+            <table id="tabelaCR" class="table table-hover align-middle w-100 table-sticky">
+                <thead>
+                    <tr>
+                        <th class="text-center no-print">✓</th>
+                        <th>Doc / Duplicata</th>
+                        <th>Empresa</th>
+                        <th>Cliente</th>
+                        <th>Portador / Banco</th>
+                        <th>Nosso Número</th>
+                        <th>Vencimento</th>
+                        <th>Data Receb.</th>
+                        <th>Status</th>
+                        <th class="text-end">Valor Título (R$)</th>
+                        <th class="text-end">Valor Recebido (R$)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cr in tabela_cr %}
+                    <tr data-conc-id="CR-{{ cr.id }}">
+                        <td class="text-center no-print">
+                            <input type="checkbox" class="form-check-input chk-conciliar"
+                                   data-id="CR-{{ cr.id }}"
+                                   data-valor="{{ cr.valor_recebido|default:cr.valor_total|stringformat:'.2f' }}">
+                        </td>
+                        <td class="fw-bold text-nowrap">{{ cr.documento }} <small class="text-muted">({{ cr.parcela }})</small></td>
+                        <td class="text-nowrap"><small class="text-muted">{{ cr.empresa }}</small></td>
+                        <td class="fw-semibold">{{ cr.cliente_nome }}</td>
+                        <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ cr.portador }}</span></td>
+                        <td class="text-nowrap small text-muted">{{ cr.nosso_numero }}</td>
+                        <td class="text-nowrap" data-order="{{ cr.data_venc_iso }}">{{ cr.data_venc_str }}</td>
+                        <td class="text-nowrap fw-semibold" data-order="{{ cr.data_rec_iso }}">{{ cr.data_rec_str }}</td>
+                        <td class="text-nowrap">
+                            {% if cr.status == 'RECEBIDO' %}
+                                <span class="badge bg-success">Recebido</span>
+                            {% elif cr.status == 'VENCIDO' %}
+                                <span class="badge bg-danger">Vencido</span>
+                            {% else %}
+                                <span class="badge bg-warning text-dark">A Vencer</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end text-nowrap" data-order="{{ cr.valor_total|stringformat:'.2f' }}">
+                            R$ {{ cr.valor_total|floatformat:2 }}
+                        </td>
+                        <td class="text-end fw-bold text-success text-nowrap" data-order="{{ cr.valor_recebido|stringformat:'.2f' }}">
+                            R$ {{ cr.valor_recebido|floatformat:2 }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Aba 2: Contas a Pagar -->
+        <div class="tab-pane fade" id="cp-pane" role="tabpanel">
+            <table id="tabelaCP" class="table table-hover align-middle w-100 table-sticky">
+                <thead>
+                    <tr>
+                        <th class="text-center no-print">✓</th>
+                        <th>Doc / Duplicata</th>
+                        <th>Empresa</th>
+                        <th>Fornecedor / Credor</th>
+                        <th>Categoria / Grupo Conta</th>
+                        <th>Portador</th>
+                        <th>Vencimento</th>
+                        <th>Data Pagto.</th>
+                        <th>Status</th>
+                        <th class="text-end">Valor Título (R$)</th>
+                        <th class="text-end">Valor Pago (R$)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cp in tabela_cp %}
+                    <tr data-conc-id="CP-{{ cp.id }}">
+                        <td class="text-center no-print">
+                            <input type="checkbox" class="form-check-input chk-conciliar"
+                                   data-id="CP-{{ cp.id }}"
+                                   data-valor="-{{ cp.valor_pago|default:cp.valor_total|stringformat:'.2f' }}">
+                        </td>
+                        <td class="fw-bold text-nowrap">{{ cp.documento }} <small class="text-muted">({{ cp.parcela }})</small></td>
+                        <td class="text-nowrap"><small class="text-muted">{{ cp.empresa }}</small></td>
+                        <td class="fw-semibold">{{ cp.fornecedor_nome }}</td>
+                        <td class="small text-muted">{{ cp.grupo_conta }}</td>
+                        <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ cp.portador }}</span></td>
+                        <td class="text-nowrap" data-order="{{ cp.data_venc_iso }}">{{ cp.data_venc_str }}</td>
+                        <td class="text-nowrap fw-semibold" data-order="{{ cp.data_pag_iso }}">{{ cp.data_pag_str }}</td>
+                        <td class="text-nowrap">
+                            {% if cp.status == 'PAGO' %}
+                                <span class="badge bg-success">Pago</span>
+                            {% elif cp.status == 'VENCIDO' %}
+                                <span class="badge bg-danger">Vencido</span>
+                            {% else %}
+                                <span class="badge bg-warning text-dark">A Vencer</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end text-nowrap" data-order="{{ cp.valor_total|stringformat:'.2f' }}">
+                            R$ {{ cp.valor_total|floatformat:2 }}
+                        </td>
+                        <td class="text-end fw-bold text-danger text-nowrap" data-order="{{ cp.valor_pago|stringformat:'.2f' }}">
+                            R$ {{ cp.valor_pago|floatformat:2 }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    $(document).ready(function() {
+        const dtConfig = {
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json'
+            },
+            dom: "<'row mb-2 align-items-center'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                 "<'table-matrix-scroll'tr>" +
+                 "<'row mt-3 align-items-center'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+            pageLength: 15,
+            lengthMenu: [[15, 25, 50, 100], [15, 25, 50, 100]],
+            order: []
+        };
+
+        $('#tabelaCR').DataTable(dtConfig);
+        $('#tabelaCP').DataTable(dtConfig);
+
+        // Conciliação bancária assistida no navegador (persiste no localStorage)
+        const STORAGE_KEY = 'amm_conciliados_{{ ano_selecionado }}_{{ mes_selecionado }}';
+        let conciliados = {};
+        try {
+            conciliados = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+        } catch (e) {
+            conciliados = {};
+        }
+
+        function atualizarResumoConciliacao() {
+            let qtd = 0;
+            let soma = 0.0;
+            Object.keys(conciliados).forEach(function(k) {
+                if (conciliados[k] !== undefined) {
+                    qtd += 1;
+                    soma += parseFloat(conciliados[k]) || 0.0;
+                }
+            });
+            const formatado = soma.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+            $('#resumoConciliacaoManual').text(qtd + ' marcados na tela (Saldo: ' + formatado + ')');
+        }
+
+        function aplicarEstadoLinhas() {
+            $('.chk-conciliar').each(function() {
+                const id = $(this).data('id');
+                const marcado = conciliados[id] !== undefined;
+                $(this).prop('checked', marcado);
+                $(this).closest('tr').toggleClass('row-conciliado', marcado);
+            });
+            atualizarResumoConciliacao();
+        }
+
+        $(document).on('change', '.chk-conciliar', function() {
+            const id = $(this).data('id');
+            const val = parseFloat($(this).data('valor')) || 0.0;
+            if ($(this).is(':checked')) {
+                conciliados[id] = val;
+                $(this).closest('tr').addClass('row-conciliado');
+            } else {
+                delete conciliados[id];
+                $(this).closest('tr').removeClass('row-conciliado');
+            }
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(conciliados));
+            atualizarResumoConciliacao();
+        });
+
+        $('#btnLimparConciliados').on('click', function() {
+            conciliados = {};
+            localStorage.removeItem(STORAGE_KEY);
+            aplicarEstadoLinhas();
+        });
+
+        $('#tabelaCR, #tabelaCP').on('draw.dt', function() {
+            aplicarEstadoLinhas();
+        });
+
+        aplicarEstadoLinhas();
+    });
+</script>
+{% endblock %}

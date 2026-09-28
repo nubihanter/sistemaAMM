@@ -9,8 +9,13 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 
-from .dashboard_services import gerar_analise_clientes, gerar_metricas_e_graficos
-from .models import LogSincronizacao, NotaFiscal, Vendedor
+from .dashboard_services import (
+    gerar_analise_clientes,
+    gerar_dashboard_financeiro,
+    gerar_dashboard_orcamentos,
+    gerar_metricas_e_graficos,
+)
+from .models import LogSincronizacao, NotaFiscal, Orcamento, Vendedor
 
 
 def _obter_redirect_seguro(request, fallback: str) -> str:
@@ -812,3 +817,196 @@ def disparar_sincronizacao_view(request):
         messages.error(request, f"Falha durante a sincronização ({acao}): {exc}")
 
     return redirect(_obter_redirect_seguro(request, "/sales/sincronizacao/"))
+
+
+@login_required
+def dashboard_orcamentos_view(request):
+    """
+    Página de Orçamentos (CRM Hardness):
+    Exibe total de orçamentos no mês, % orçamentos realizados (em R$ e em Qtd),
+    pipeline em aberto, perdidos, conversão por vendedor e listagem detalhada.
+    """
+    user = request.user
+    if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS") and not user.is_superuser:
+        return redirect("dashboard_estoque")
+
+    hoje = timezone.now().date()
+    try:
+        mes_selecionado = int(request.GET.get("mes", hoje.month))
+        if not 1 <= mes_selecionado <= 12:
+            mes_selecionado = hoje.month
+    except ValueError:
+        mes_selecionado = hoje.month
+
+    try:
+        ano_selecionado = int(request.GET.get("ano", hoje.year))
+    except ValueError:
+        ano_selecionado = hoje.year
+
+    empresa_filtro = request.GET.get("empresa", "TODAS").strip() or "TODAS"
+    status_filtro = request.GET.get("status", "TODOS").strip().upper() or "TODOS"
+
+    if user.is_vendedor:
+        vendedora_selecionada = (user.nome_vendedor_erp or user.first_name or user.username).strip().upper()
+        pode_selecionar = False
+    else:
+        vendedora_selecionada = request.GET.get("visao", "EMPRESA").strip().upper() or "EMPRESA"
+        pode_selecionar = True
+
+    vendedores_ativos = {
+        str(v).strip().upper()
+        for v in Vendedor.objects.filter(ativo=True).values_list("nome_hardness", flat=True)
+        if v
+    }
+    nomes_orc = {
+        str(v).strip().upper()
+        for v in Orcamento.objects.order_by().values_list("vendedor_nome", flat=True).distinct()
+        if v and str(v).strip().upper() not in ("", "NAN", "NONE", "DESCONHECIDO")
+    }
+    vendedores_disponiveis = sorted(
+        (nomes_orc & vendedores_ativos) if vendedores_ativos else nomes_orc
+    )
+
+    empresas_disponiveis = sorted(
+        e for e in Orcamento.objects.order_by().values_list("empresa", flat=True).distinct() if e
+    )
+
+    (
+        kpis,
+        grafico_status,
+        grafico_vendedores,
+        resumo_vendedores,
+        tabela_orcamentos,
+    ) = gerar_dashboard_orcamentos(
+        mes_selecionado=mes_selecionado,
+        ano_selecionado=ano_selecionado,
+        vendedora_selecionada=vendedora_selecionada,
+        empresa_filtro=empresa_filtro,
+        status_filtro=status_filtro,
+        gerar_graficos=True,
+    )
+
+    context = {
+        "vendedora_selecionada": vendedora_selecionada,
+        "vendedores_disponiveis": vendedores_disponiveis,
+        "pode_selecionar": pode_selecionar,
+        "pode_ver_margem": bool(getattr(user, "is_admin", False) or getattr(user, "is_supervisor", False)),
+        "empresa_filtro": empresa_filtro,
+        "empresas_disponiveis": empresas_disponiveis,
+        "status_filtro": status_filtro,
+        "mes_selecionado": mes_selecionado,
+        "ano_selecionado": ano_selecionado,
+        "kpis": kpis,
+        "grafico_status": grafico_status,
+        "grafico_vendedores": grafico_vendedores,
+        "resumo_vendedores": resumo_vendedores,
+        "tabela_orcamentos": tabela_orcamentos,
+        "meses": [
+            (1, "Jan"),
+            (2, "Fev"),
+            (3, "Mar"),
+            (4, "Abr"),
+            (5, "Mai"),
+            (6, "Jun"),
+            (7, "Jul"),
+            (8, "Ago"),
+            (9, "Set"),
+            (10, "Out"),
+            (11, "Nov"),
+            (12, "Dez"),
+        ],
+        "anos": [hoje.year, hoje.year - 1, hoje.year - 2],
+    }
+    return render(request, "sales/orcamentos.html", context)
+
+
+@login_required
+def dashboard_financeiro_view(request):
+    """
+    Página Financeira (Contas a Receber & Contas a Pagar):
+    Focada no cálculo do Lucro Líquido (DRE Simplificado) e na Conciliação Bancária.
+    Restrita a Administradores e Supervisores.
+    """
+    from .models import ContaPagar, ContaReceber
+
+    user = request.user
+    if not (getattr(user, "is_admin", False) or getattr(user, "is_supervisor", False)):
+        if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS"):
+            return redirect("dashboard_estoque")
+        return redirect("dashboard_vendas")
+
+    hoje = timezone.now().date()
+    try:
+        mes_selecionado = int(request.GET.get("mes", hoje.month))
+        if not 1 <= mes_selecionado <= 12:
+            mes_selecionado = hoje.month
+    except ValueError:
+        mes_selecionado = hoje.month
+
+    try:
+        ano_selecionado = int(request.GET.get("ano", hoje.year))
+    except ValueError:
+        ano_selecionado = hoje.year
+
+    empresa_filtro = request.GET.get("empresa", "TODAS").strip() or "TODAS"
+    regime = request.GET.get("regime", "CAIXA").strip().upper() or "CAIXA"
+    if regime not in ("CAIXA", "COMPETENCIA"):
+        regime = "CAIXA"
+    portador_filtro = request.GET.get("portador", "TODOS").strip().upper() or "TODOS"
+
+    empresas_cr = set(
+        e for e in ContaReceber.objects.order_by().values_list("empresa", flat=True).distinct() if e
+    )
+    empresas_cp = set(
+        e for e in ContaPagar.objects.order_by().values_list("empresa", flat=True).distinct() if e
+    )
+    empresas_disponiveis = sorted(empresas_cr | empresas_cp)
+
+    (
+        kpis,
+        dre,
+        grafico_dre,
+        resumo_portadores,
+        tabela_cr,
+        tabela_cp,
+        portadores_disponiveis,
+    ) = gerar_dashboard_financeiro(
+        mes_selecionado=mes_selecionado,
+        ano_selecionado=ano_selecionado,
+        empresa_filtro=empresa_filtro,
+        regime=regime,
+        portador_filtro=portador_filtro,
+        gerar_graficos=True,
+    )
+
+    context = {
+        "mes_selecionado": mes_selecionado,
+        "ano_selecionado": ano_selecionado,
+        "empresa_filtro": empresa_filtro,
+        "empresas_disponiveis": empresas_disponiveis,
+        "regime": regime,
+        "portador_filtro": portador_filtro,
+        "portadores_disponiveis": portadores_disponiveis,
+        "kpis": kpis,
+        "dre": dre,
+        "grafico_dre": grafico_dre,
+        "resumo_portadores": resumo_portadores,
+        "tabela_cr": tabela_cr,
+        "tabela_cp": tabela_cp,
+        "meses": [
+            (1, "Jan"),
+            (2, "Fev"),
+            (3, "Mar"),
+            (4, "Abr"),
+            (5, "Mai"),
+            (6, "Jun"),
+            (7, "Jul"),
+            (8, "Ago"),
+            (9, "Set"),
+            (10, "Out"),
+            (11, "Nov"),
+            (12, "Dez"),
+        ],
+        "anos": [hoje.year, hoje.year - 1, hoje.year - 2],
+    }
+    return render(request, "sales/financeiro.html", context)

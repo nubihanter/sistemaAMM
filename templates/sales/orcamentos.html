@@ -1,0 +1,354 @@
+{% extends 'base.html' %}
+
+{% block title %}Orçamentos - AMM{% endblock %}
+
+{% block extra_head %}
+<style>
+    .card-metric {
+        border-radius: 10px;
+        border: none;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+    .table-matrix-scroll {
+        max-height: 55vh;
+        overflow: auto;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        position: relative;
+        background-color: #ffffff;
+    }
+    .table-sticky thead th {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background-color: #1e293b !important;
+        color: #ffffff !important;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        vertical-align: middle;
+        white-space: nowrap;
+        border-bottom: 2px solid #0f172a !important;
+    }
+    .table-sticky tbody td {
+        font-size: 0.84rem;
+        vertical-align: middle;
+        background-color: #ffffff;
+    }
+    .table-sticky tbody tr:hover td {
+        background-color: #f1f5f9 !important;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Cabeçalho -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h2 class="fw-bold text-primary mb-0">📋 Acompanhamento de Orçamentos (CRM)</h2>
+        <small class="text-muted">
+            Visão: <strong>{{ vendedora_selecionada }}</strong> |
+            Empresa: <strong>{{ empresa_filtro }}</strong> |
+            Período: <strong>{{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }}</strong>
+        </small>
+    </div>
+    <div class="d-flex flex-wrap gap-2 no-print">
+        {% if request.user.is_admin %}
+        <form method="post" action="{% url 'disparar_sincronizacao' %}" class="m-0">
+            {% csrf_token %}
+            <input type="hidden" name="acao" value="orcamentos_hardness">
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <button type="submit" class="btn btn-outline-secondary btn-sm fw-semibold shadow-sm" title="Sincronizar Orçamentos recentes no Hardness">
+                🔄 Sincronizar Orçamentos
+            </button>
+        </form>
+        {% endif %}
+        <button type="button" onclick="window.print()" class="btn btn-outline-dark btn-sm fw-semibold shadow-sm">
+            🖨️ Imprimir / PDF
+        </button>
+    </div>
+</div>
+
+<!-- Barra de Filtros -->
+<div class="card card-kpi p-3 mb-4 bg-white no-print">
+    <form method="get" class="row g-3 align-items-end">
+        {% if pode_selecionar %}
+        <div class="col-lg-3 col-md-6">
+            <label for="id_visao" class="form-label small fw-bold text-muted mb-1">👤 Vendedor / Visão:</label>
+            <select id="id_visao" name="visao" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="EMPRESA" {% if vendedora_selecionada == 'EMPRESA' %}selected{% endif %}>
+                    EMPRESA (Todos os Vendedores)
+                </option>
+                <optgroup label="Vendedores">
+                    {% for vend in vendedores_disponiveis %}
+                    <option value="{{ vend }}" {% if vendedora_selecionada == vend %}selected{% endif %}>
+                        {{ vend }}
+                    </option>
+                    {% endfor %}
+                </optgroup>
+            </select>
+        </div>
+        {% else %}
+        <div class="col-lg-3 col-md-6">
+            <label class="form-label small fw-bold text-muted mb-1">👤 Sua Carteira:</label>
+            <input type="text" class="form-control form-control-sm bg-light fw-bold" value="{{ vendedora_selecionada }}" readonly>
+        </div>
+        {% endif %}
+
+        <div class="col-lg-2 col-md-6">
+            <label for="id_empresa" class="form-label small fw-bold text-muted mb-1">🏢 Empresa:</label>
+            <select id="id_empresa" name="empresa" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODAS" {% if empresa_filtro == 'TODAS' %}selected{% endif %}>Todas (Consolidado)</option>
+                {% for emp in empresas_disponiveis %}
+                <option value="{{ emp }}" {% if empresa_filtro == emp %}selected{% endif %}>{{ emp }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-2 col-md-4 col-6">
+            <label for="id_status" class="form-label small fw-bold text-muted mb-1">📌 Status na Tabela:</label>
+            <select id="id_status" name="status" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODOS" {% if status_filtro == 'TODOS' %}selected{% endif %}>Todos os Status</option>
+                <option value="FINALIZADO" {% if status_filtro == 'FINALIZADO' %}selected{% endif %}>✅ Realizados / Ganhos</option>
+                <option value="PENDENTE" {% if status_filtro == 'PENDENTE' %}selected{% endif %}>⏳ Em Aberto / Pendentes</option>
+                <option value="PERDIDO" {% if status_filtro == 'PERDIDO' %}selected{% endif %}>❌ Perdidos / Cancelados</option>
+            </select>
+        </div>
+
+        <div class="col-lg-2 col-md-4 col-6">
+            <label for="id_mes" class="form-label small fw-bold text-muted mb-1">📅 Mês:</label>
+            <select id="id_mes" name="mes" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for num, nome in meses %}
+                <option value="{{ num }}" {% if mes_selecionado == num %}selected{% endif %}>
+                    {{ num|stringformat:"02d" }} - {{ nome }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-2 col-md-4 col-6">
+            <label for="id_ano" class="form-label small fw-bold text-muted mb-1">📆 Ano:</label>
+            <select id="id_ano" name="ano" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for a in anos %}
+                <option value="{{ a }}" {% if ano_selecionado == a %}selected{% endif %}>{{ a }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-lg-1 col-md-12 col-6">
+            <button type="submit" class="btn btn-primary btn-sm w-100 fw-semibold">Filtrar</button>
+        </div>
+    </form>
+</div>
+
+<!-- Linha de KPIs Principais -->
+<div class="row g-3 mb-4">
+    <!-- 1. Total de Orçamentos no Mês -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-metric p-3 bg-white border-start border-primary border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">📋 Orçamentos no Mês</span>
+                <span class="badge bg-primary-subtle text-primary border">{{ kpis.qtd_total }} orç.</span>
+            </div>
+            <h4 class="fw-bold text-primary mb-1 mt-1">{{ kpis.valor_orcado }}</h4>
+            <small class="text-muted">Ticket médio: <strong>{{ kpis.ticket_medio }}</strong></small>
+        </div>
+    </div>
+
+    <!-- 2. % Orçamentos Realizados (em R$) -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-metric p-3 bg-white border-start border-success border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">✅ Realizados / Ganhos</span>
+                <span class="badge bg-success text-white">{{ kpis.pct_realizado_valor }} em R$</span>
+            </div>
+            <h4 class="fw-bold text-success mb-1 mt-1">{{ kpis.valor_realizado }}</h4>
+            <small class="text-muted">
+                <strong>{{ kpis.qtd_realizados }}</strong> ganhos ({{ kpis.pct_realizado_qtd }} em qtd)
+                {% if pode_ver_margem %} | Margem: <strong>{{ kpis.margem_realizados_pct }}</strong>{% endif %}
+            </small>
+        </div>
+    </div>
+
+    <!-- 3. Em Aberto / Pendentes -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-metric p-3 bg-white border-start border-warning border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">⏳ Em Aberto (Pipeline)</span>
+                <span class="badge bg-warning text-dark">{{ kpis.pct_pendente_valor }} em R$</span>
+            </div>
+            <h4 class="fw-bold text-warning-emphasis mb-1 mt-1">{{ kpis.valor_pendente }}</h4>
+            <small class="text-muted"><strong>{{ kpis.qtd_pendentes }}</strong> orçamentos aguardando fechamento</small>
+        </div>
+    </div>
+
+    <!-- 4. Perdidos / Cancelados -->
+    <div class="col-xl-3 col-md-6">
+        <div class="card card-metric p-3 bg-white border-start border-danger border-4 h-100">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small fw-bold">❌ Perdidos / Cancelados</span>
+                <span class="badge bg-danger-subtle text-danger border">{{ kpis.pct_perdido_valor }} em R$</span>
+            </div>
+            <h4 class="fw-bold text-danger mb-1 mt-1">{{ kpis.valor_perdido }}</h4>
+            <small class="text-muted"><strong>{{ kpis.qtd_perdidos }}</strong> orçamentos não convertidos</small>
+        </div>
+    </div>
+</div>
+
+<!-- Gráficos Principais -->
+<div class="row g-3 mb-4">
+    <div class="col-lg-5">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_status %}
+                {{ grafico_status|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem orçamentos para o período selecionado.</div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-7">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_vendedores %}
+                {{ grafico_vendedores|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Sem dados de conversão por vendedor no período.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Resumo de Conversão por Vendedor -->
+{% if resumo_vendedores and pode_selecionar %}
+<div class="card card-kpi p-4 bg-white mb-4">
+    <h5 class="fw-bold mb-1">🏆 Conversão de Orçamentos por Vendedor ({{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }})</h5>
+    <small class="text-muted d-block mb-3">Acompanhamento do valor total orçado versus valor efetivamente realizado (ganho) em R$.</small>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th>Vendedor</th>
+                    <th class="text-center">Qtd Orç.</th>
+                    <th class="text-end">Total Orçado (R$)</th>
+                    <th class="text-center">Qtd Realizados</th>
+                    <th class="text-end">Realizado / Ganho (R$)</th>
+                    <th class="text-center">% Realizado (R$)</th>
+                    <th class="text-end">Em Aberto (R$)</th>
+                    <th class="text-end">Perdido (R$)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rv in resumo_vendedores %}
+                <tr>
+                    <td class="fw-bold">{{ rv.vendedor_nome }}</td>
+                    <td class="text-center">{{ rv.qtd_total }}</td>
+                    <td class="text-end fw-semibold">R$ {{ rv.valor_orcado|floatformat:2 }}</td>
+                    <td class="text-center">{{ rv.qtd_realizados }} <small class="text-muted">({{ rv.pct_realizado_qtd|floatformat:1 }}%)</small></td>
+                    <td class="text-end fw-bold text-success">R$ {{ rv.valor_realizado|floatformat:2 }}</td>
+                    <td class="text-center">
+                        <span class="badge {% if rv.pct_realizado_valor >= 40 %}bg-success{% elif rv.pct_realizado_valor >= 25 %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
+                            {{ rv.pct_realizado_valor|floatformat:1 }}%
+                        </span>
+                    </td>
+                    <td class="text-end text-warning-emphasis">R$ {{ rv.valor_pendente|floatformat:2 }}</td>
+                    <td class="text-end text-danger">R$ {{ rv.valor_perdido|floatformat:2 }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- Tabela Detalhada de Orçamentos do Mês -->
+<div class="card card-kpi p-4 bg-white mb-5">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div>
+            <h5 class="fw-bold mb-0">📄 Lista de Orçamentos do Período ({{ tabela_orcamentos|length }})</h5>
+            <small class="text-muted">Consulte status, pedido/NF vinculada e motivos de perda informados no CRM.</small>
+        </div>
+    </div>
+    <div>
+        <table id="tabelaOrcamentosMes" class="table table-hover align-middle w-100 table-sticky">
+            <thead>
+                <tr>
+                    <th>Nº Orç.</th>
+                    <th>Empresa</th>
+                    <th>Data</th>
+                    <th>Cliente</th>
+                    <th>Vendedor</th>
+                    <th>Status</th>
+                    <th>Pedido / NF</th>
+                    <th>Motivo Perda / Obs.</th>
+                    <th class="text-end">Valor Total (R$)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for orc in tabela_orcamentos %}
+                <tr>
+                    <td class="fw-bold text-nowrap">{{ orc.numero_orcamento }}</td>
+                    <td class="text-nowrap"><small class="text-muted">{{ orc.empresa }}</small></td>
+                    <td class="text-nowrap" data-order="{{ orc.data_iso }}">{{ orc.data_str }}</td>
+                    <td>
+                        <div class="fw-semibold">{{ orc.cliente_nome }}</div>
+                        {% if orc.cidade or orc.uf %}
+                            <small class="text-muted">{{ orc.cidade|default:"" }}{% if orc.uf %}/{{ orc.uf }}{% endif %}</small>
+                        {% endif %}
+                    </td>
+                    <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ orc.vendedor_nome }}</span></td>
+                    <td class="text-nowrap">
+                        {% if orc.status_consolidado == 'FINALIZADO' %}
+                            <span class="badge bg-success">✅ Realizado</span>
+                        {% elif orc.status_consolidado == 'PENDENTE' %}
+                            <span class="badge bg-warning text-dark">⏳ Em Aberto</span>
+                        {% else %}
+                            <span class="badge bg-danger">❌ Perdido</span>
+                        {% endif %}
+                    </td>
+                    <td class="small">
+                        {% if orc.numero_nota %}
+                            <span class="badge bg-primary-subtle text-primary border">NF {{ orc.numero_nota }}</span>
+                        {% endif %}
+                        {% if orc.pedido_gerado %}
+                            <div class="text-muted" style="font-size: 0.76rem;">{{ orc.pedido_gerado }}</div>
+                        {% elif not orc.numero_nota %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="small text-muted" style="max-width: 240px;">
+                        {% if orc.motivo_perda %}
+                            <span class="text-danger-emphasis">{{ orc.motivo_perda|truncatechars:80 }}</span>
+                        {% elif orc.observacao %}
+                            {{ orc.observacao|truncatechars:80 }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td class="text-end fw-bold text-nowrap {% if orc.status_consolidado == 'FINALIZADO' %}text-success{% elif orc.status_consolidado == 'PERDIDO' %}text-danger{% else %}text-dark{% endif %}"
+                        data-order="{{ orc.valor_total|stringformat:'.2f' }}">
+                        R$ {{ orc.valor_total|floatformat:2 }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    $(document).ready(function() {
+        $('#tabelaOrcamentosMes').DataTable({
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json'
+            },
+            dom: "<'row mb-2 align-items-center'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                 "<'table-matrix-scroll'tr>" +
+                 "<'row mt-3 align-items-center'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+            pageLength: 15,
+            lengthMenu: [[15, 25, 50, 100], [15, 25, 50, 100]],
+            order: []
+        });
+    });
+</script>
+{% endblock %}
