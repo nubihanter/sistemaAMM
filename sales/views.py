@@ -106,6 +106,9 @@ def dashboard_vendas(request):
         pode_selecionar = True
 
     pode_ver_margem = bool(getattr(user, "is_admin", False))
+    pode_ver_comparativo_prazo = bool(
+        getattr(user, "is_admin", False) or getattr(user, "is_supervisor", False)
+    )
 
     # 4. Gera métricas e gráficos Plotly
     (
@@ -130,6 +133,7 @@ def dashboard_vendas(request):
         "vendedores_disponiveis": vendedores_disponiveis,
         "pode_selecionar": pode_selecionar,
         "pode_ver_margem": pode_ver_margem,
+        "pode_ver_comparativo_prazo": pode_ver_comparativo_prazo,
         "mes_selecionado": mes_selecionado,
         "ano_selecionado": ano_selecionado,
         "metricas": metricas,
@@ -138,6 +142,7 @@ def dashboard_vendas(request):
         "grafico_ranking": graf_ranking,
         "grafico_historico_metas": graf_historico_metas,
         "grafico_top_clientes": graf_top_clientes,
+        "grafico_prazo_vendedores": metricas.get("grafico_prazo_vendedores", "") if pode_ver_comparativo_prazo else "",
         "tabela_notas": tabela_notas,
         "meses": [
             (1, "Jan"),
@@ -309,6 +314,7 @@ def exportar_vendas_excel_view(request):
         ("Notas Emitidas no Mês", int(metricas.get("num_vendas", 0))),
         ("Clientes Únicos Atendidos", int(metricas.get("num_clientes", 0))),
         ("Ticket Médio por Nota", metricas.get("ticket_medio", "R$ 0,00")),
+        ("Prazo Médio Praticado", metricas.get("prazo_medio_dias", "Sem dados")),
     ]
     if pode_ver_margem and metricas.get("tem_margem"):
         linhas_resumo.extend(
@@ -665,7 +671,7 @@ def disparar_sincronizacao_view(request):
     modo_sincrono = request.POST.get("modo", "").strip().lower() == "sincrono"
     nome_usuario = user.username
 
-    def _normalizar_datas_form():
+    def _normalizar_datas_form(preencher_fim_hoje: bool = True):
         di = request.POST.get("data_inicio", "").strip()
         df_s = request.POST.get("data_fim", "").strip()
         if di and "-" in di and len(di) == 10:
@@ -674,7 +680,7 @@ def disparar_sincronizacao_view(request):
         if df_s and "-" in df_s and len(df_s) == 10:
             pf = df_s.split("-")
             df_s = f"{pf[2]}/{pf[1]}/{pf[0]}"
-        elif di and not df_s:
+        elif di and not df_s and preencher_fim_hoje:
             df_s = timezone.now().strftime("%d/%m/%Y")
         return di, df_s
 
@@ -701,13 +707,13 @@ def disparar_sincronizacao_view(request):
 
     elif acao == "financeiro_hardness":
         tipo_sync = "FINANCEIRO_HARDNESS"
-        data_inicio, data_fim = _normalizar_datas_form()
-        if data_inicio:
-            funcao_sync = lambda di=data_inicio, df_str=data_fim: sincronizar_financeiro_hardness(
+        data_inicio, data_fim = _normalizar_datas_form(preencher_fim_hoje=False)
+        if data_inicio or data_fim:
+            funcao_sync = lambda di=data_inicio or None, df_str=data_fim: sincronizar_financeiro_hardness(
                 data_inicio=di, data_fim=df_str
             )
         else:
-            funcao_sync = lambda: sincronizar_financeiro_hardness(dias_retroativos_padrao=30)
+            funcao_sync = lambda: sincronizar_financeiro_hardness(data_fim="", dias_retroativos_padrao=30)
 
     elif acao == "orcamentos_hardness":
         tipo_sync = "ORCAMENTOS_HARDNESS"
@@ -1143,6 +1149,8 @@ def dashboard_financeiro_view(request):
         "kpis": kpis,
         "dre": dre,
         "grafico_dre": grafico_dre,
+        "grafico_pizza_entradas": dre.get("grafico_pizza_entradas", ""),
+        "grafico_pizza_saidas": dre.get("grafico_pizza_saidas", ""),
         "resumo_portadores": resumo_portadores,
         "tabela_cr": tabela_cr,
         "tabela_cp": tabela_cp,

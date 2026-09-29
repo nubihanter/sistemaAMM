@@ -50,7 +50,9 @@
     #tabelaCompras thead th,
     #tabelaRanking thead th,
     #tabelaClienteProdutos thead th,
-    #tabelaParados thead th {
+    #tabelaParados thead th,
+    #tabelaFornecedoresComprados thead th,
+    #tabelaFornecedoresVendas thead th {
         position: sticky !important;
         top: 0 !important;
         z-index: 25 !important;
@@ -324,6 +326,13 @@
                 data-bs-toggle="tab" data-bs-target="#pane-parados" type="button" role="tab"
                 onclick="document.getElementById('inputAbaAtiva').value='parados'">
             ❄️ Produtos Parados & Excesso ({{ kpis.qtd_parados|add:kpis.qtd_excesso }})
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'fornecedores' %}active{% endif %}" id="tab-fornecedores-btn"
+                data-bs-toggle="tab" data-bs-target="#pane-fornecedores" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='fornecedores'">
+            🏭 Análise de Fornecedores ({{ resumo_fornecedores.total_marcas_ativas|default:"0" }})
         </button>
     </li>
 </ul>
@@ -780,10 +789,21 @@
     <!-- ========================================================================= -->
     <div class="tab-pane fade {% if aba_ativa == 'parados' %}show active{% endif %}" id="pane-parados" role="tabpanel">
         <div class="card card-kpi bg-white p-4 mb-5">
-            <h4 class="fw-bold mb-1">❄️ Diagnóstico de Produtos Parados (Sem Giro) e Estoque Acima do Necessário</h4>
-            <p class="text-muted small mb-3">
-                Esta visão destaca itens com <strong>0 vendas nos últimos {{ dias_analise }} dias</strong> que possuem saldo positivo no galpão, além de itens cujo estoque atual supera o teto de <strong>{{ teto_meses }} meses</strong> de cobertura.
-            </p>
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                <div>
+                    <h4 class="fw-bold mb-1">❄️ Diagnóstico de Produtos Parados (Sem Giro) e Estoque Acima do Necessário</h4>
+                    <p class="text-muted small mb-0">
+                        Esta visão destaca itens com <strong>0 vendas nos últimos {{ dias_analise }} dias</strong> que possuem saldo positivo no galpão, além de itens cujo estoque atual supera o teto de <strong>{{ teto_meses }} meses</strong> de cobertura.
+                    </p>
+                </div>
+                <div>
+                    <a href="{% url 'exportar_parados_excel' %}?dias={{ dias_analise }}&cobertura={{ cobertura_meses }}&teto={{ teto_meses }}&marca={{ marca_selecionada }}"
+                       class="btn btn-success btn-sm d-flex align-items-center gap-1 shadow-sm"
+                       title="Exporta a planilha de produtos parados e excesso sem informações de custo e capital empatado">
+                        📥 Exportar Produtos Parados (Excel)
+                    </a>
+                </div>
+            </div>
             <div>
                 <table id="tabelaParados" class="table table-hover align-middle w-100">
                     <thead>
@@ -834,6 +854,307 @@
                                     <br><small class="text-muted">({{ r.Dias_Sem_Vender }}d atrás)</small>
                                 {% endif %}
                             </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- ABA 5: ANÁLISE DE FORNECEDORES & MARCAS (BASE DE GIRO)                    -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'fornecedores' %}show active{% endif %}" id="pane-fornecedores" role="tabpanel">
+        <!-- Cards de Resumo de Fornecedores -->
+        <div class="row g-3 mb-4">
+            <div class="col-md-3 col-6">
+                <div class="card card-kpi p-3 bg-white border-start border-primary border-4 h-100">
+                    <span class="text-muted small fw-bold">🏭 Fornecedores Comprados ({{ dias_analise }}d)</span>
+                    <h4 class="fw-bold text-primary mb-0 mt-1">{{ resumo_fornecedores.total_fornecedores_comprados|default:"0" }}</h4>
+                    {% if pode_ver_valores_financeiros %}
+                        <small class="text-muted">Compras no período: <strong>{{ resumo_fornecedores.valor_total_comprado|default:"R$ 0,00" }}</strong></small>
+                    {% else %}
+                        <small class="text-muted">Base de giro selecionada: {{ dias_analise }} dias</small>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card card-kpi p-3 bg-white border-start border-info border-4 h-100">
+                    <span class="text-muted small fw-bold">🏷️ Marcas / Fornecedores Ativos</span>
+                    <h4 class="fw-bold text-info mb-0 mt-1">{{ resumo_fornecedores.total_marcas_ativas|default:"0" }}</h4>
+                    <small class="text-muted">Com giro ou estoque no período</small>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card card-kpi p-3 bg-white border-start border-success border-4 h-100">
+                    <span class="text-muted small fw-bold">📈 Fornecedores em Ascensão</span>
+                    <h4 class="fw-bold text-success mb-0 mt-1">{{ resumo_fornecedores.qtd_ascensao|default:"0" }}</h4>
+                    <small class="text-muted">Curva de demanda subindo no período</small>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card card-kpi p-3 bg-white border-start border-danger border-4 h-100">
+                    <span class="text-muted small fw-bold">📉 Fornecedores em Queda</span>
+                    <h4 class="fw-bold text-danger mb-0 mt-1">{{ resumo_fornecedores.qtd_queda|default:"0" }}</h4>
+                    <small class="text-muted">Curva de demanda desacelerando</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Gráficos: Mais Comprados vs Mais Vendem -->
+        <div class="row g-3 mb-4">
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if pode_ver_valores_financeiros and graficos.fornecedores_mais_comprados %}
+                        {{ graficos.fornecedores_mais_comprados|safe }}
+                    {% elif graficos.fornecedores_mais_comprados_qtd %}
+                        {{ graficos.fornecedores_mais_comprados_qtd|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem registros de compras de fornecedores nos últimos {{ dias_analise }} dias.</div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if pode_ver_valores_financeiros and graficos.fornecedores_mais_vendem_fat %}
+                        {{ graficos.fornecedores_mais_vendem_fat|safe }}
+                    {% elif graficos.fornecedores_mais_vendem_qtd %}
+                        {{ graficos.fornecedores_mais_vendem_qtd|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem vendas por fornecedor/marca nos últimos {{ dias_analise }} dias.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Gráficos: Consumo Médio Mensal por Marca & Tendência (Ascensão vs Queda) -->
+        <div class="row g-3 mb-4">
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if graficos.consumo_medio_mensal_marca %}
+                        {{ graficos.consumo_medio_mensal_marca|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem dados de consumo médio mensal por marca.</div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if graficos.fornecedores_tendencia %}
+                        {{ graficos.fornecedores_tendencia|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem variação de tendência suficiente para exibir no período.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Painéis de Destaques: Fornecedores em Ascensão e Caindo -->
+        <div class="row g-3 mb-4">
+            <div class="col-lg-6">
+                <div class="card card-kpi bg-white p-4 h-100 border-top border-success border-3">
+                    <h5 class="fw-bold text-success mb-1">📈 Fornecedores em Ascensão ({{ dias_analise }}d)</h5>
+                    <p class="text-muted small mb-3">Marcas/fornecedores cuja demanda mensal apresenta crescimento consistente na base de giro.</p>
+                    {% if fornecedores_em_ascensao %}
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Fornecedor / Marca</th>
+                                    <th class="text-end">Consumo Médio/Mês</th>
+                                    <th class="text-end">Tendência/Mês</th>
+                                    <th class="text-center">Ritmo</th>
+                                    <th class="text-center">Evolução Mensal</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for f in fornecedores_em_ascensao|slice:":10" %}
+                                <tr>
+                                    <td class="fw-bold">{{ f.Fornecedor }}</td>
+                                    <td class="text-end fw-semibold">{{ f.Consumo_Medio_Mensal_Qtd|floatformat:1 }} un/mês</td>
+                                    <td class="text-end text-success fw-bold">+{{ f.Tendencia_Mes_Qtd|floatformat:1 }} un/mês</td>
+                                    <td class="text-center">
+                                        <span class="badge bg-success-subtle text-success border">+{{ f.Variacao_Pct|floatformat:1 }}%/mês</span>
+                                    </td>
+                                    <td class="text-center"><small class="text-muted">{{ f.Historico_Mensal_Str }}</small></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                        <div class="text-muted small py-3 text-center">Nenhum fornecedor com aceleração expressiva no período.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="card card-kpi bg-white p-4 h-100 border-top border-danger border-3">
+                    <h5 class="fw-bold text-danger mb-1">📉 Fornecedores Caindo ({{ dias_analise }}d)</h5>
+                    <p class="text-muted small mb-3">Marcas/fornecedores com desaceleração de vendas na base de giro (atenção antes de ampliar estoque).</p>
+                    {% if fornecedores_em_queda %}
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Fornecedor / Marca</th>
+                                    <th class="text-end">Consumo Médio/Mês</th>
+                                    <th class="text-end">Tendência/Mês</th>
+                                    <th class="text-center">Ritmo</th>
+                                    <th class="text-center">Evolução Mensal</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for f in fornecedores_em_queda|slice:":10" %}
+                                <tr>
+                                    <td class="fw-bold">{{ f.Fornecedor }}</td>
+                                    <td class="text-end fw-semibold">{{ f.Consumo_Medio_Mensal_Qtd|floatformat:1 }} un/mês</td>
+                                    <td class="text-end text-danger fw-bold">{{ f.Tendencia_Mes_Qtd|floatformat:1 }} un/mês</td>
+                                    <td class="text-center">
+                                        <span class="badge bg-danger-subtle text-danger border">{{ f.Variacao_Pct|floatformat:1 }}%/mês</span>
+                                    </td>
+                                    <td class="text-center"><small class="text-muted">{{ f.Historico_Mensal_Str }}</small></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                        <div class="text-muted small py-3 text-center">Nenhum fornecedor com queda acentuada no período.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabela 1: Ranking dos Fornecedores Mais Vendem + Consumo Médio Mensal por Marca -->
+        <div class="card card-kpi bg-white p-4 mb-4">
+            <h4 class="fw-bold mb-1">🏆 Ranking de Fornecedores que Mais Vendem & Consumo Médio Mensal por Marca ({{ dias_analise }} dias)</h4>
+            <p class="text-muted small mb-3">
+                Visão consolidada de giro de vendas por marca/fabricante, consumo médio mensal (em unidades{% if pode_ver_valores_financeiros %} e R${% endif %}), tendência de crescimento/queda e cobertura atual de estoque.
+            </p>
+            <div>
+                <table id="tabelaFornecedoresVendas" class="table table-hover align-middle w-100">
+                    <thead>
+                        <tr>
+                            <th class="text-center">#</th>
+                            <th>Marca / Fornecedor</th>
+                            <th class="text-center">SKUs (Giro/Total)</th>
+                            <th class="text-end">Qtd Vendida ({{ dias_analise }}d)</th>
+                            <th class="text-end">Consumo Médio / Mês (Un)</th>
+                            {% if pode_ver_valores_financeiros %}
+                            <th class="text-end">Faturamento ({{ dias_analise }}d)</th>
+                            <th class="text-end">Consumo Médio / Mês (R$)</th>
+                            <th class="text-end">% Part.</th>
+                            {% endif %}
+                            <th class="text-center">Tendência Mensal</th>
+                            <th class="text-center">Status Tendência</th>
+                            <th class="text-center">Histórico Mês a Mês</th>
+                            <th class="text-end">Estoque Atual</th>
+                            <th class="text-center">Cobertura</th>
+                            <th class="text-end">Sugestão Compra</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for f in tabela_fornecedores_vendas %}
+                        <tr>
+                            <td class="text-center fw-bold text-nowrap">
+                                {% if pode_ver_valores_financeiros %}{{ f.Posicao_Fat }}º{% else %}{{ f.Posicao_Qtd }}º{% endif %}
+                            </td>
+                            <td class="fw-bold text-nowrap">{{ f.Fornecedor }}</td>
+                            <td class="text-center text-nowrap">{{ f.SKUs_Com_Giro }} / {{ f.SKUs_Ativos }}</td>
+                            <td class="text-end fw-bold text-primary text-nowrap" data-order="{{ f.Qtd_Vendida|stringformat:'.2f' }}">
+                                {{ f.Qtd_Vendida|floatformat:0 }} un
+                            </td>
+                            <td class="text-end fw-bold text-nowrap col-estoque-destaque" data-order="{{ f.Consumo_Medio_Mensal_Qtd|stringformat:'.2f' }}">
+                                {{ f.Consumo_Medio_Mensal_Qtd|floatformat:1 }} un/mês
+                            </td>
+                            {% if pode_ver_valores_financeiros %}
+                            <td class="text-end fw-bold text-success text-nowrap" data-order="{{ f.Faturamento_Periodo|stringformat:'.2f' }}">
+                                R$ {{ f.Faturamento_Periodo|floatformat:2 }}
+                            </td>
+                            <td class="text-end fw-semibold text-nowrap" data-order="{{ f.Consumo_Medio_Mensal_Fat|stringformat:'.2f' }}">
+                                R$ {{ f.Consumo_Medio_Mensal_Fat|floatformat:2 }}/mês
+                            </td>
+                            <td class="text-end text-nowrap" data-order="{{ f.Pct_Faturamento|stringformat:'.2f' }}">
+                                {{ f.Pct_Faturamento|floatformat:1 }}%
+                            </td>
+                            {% endif %}
+                            <td class="text-center text-nowrap" data-order="{{ f.Tendencia_Mes_Qtd|stringformat:'.2f' }}">
+                                {% if f.Tendencia_Mes_Qtd > 0.2 %}
+                                    <span class="text-success fw-bold">+{{ f.Tendencia_Mes_Qtd|floatformat:1 }} un/mês</span>
+                                {% elif f.Tendencia_Mes_Qtd < -0.2 %}
+                                    <span class="text-danger fw-bold">{{ f.Tendencia_Mes_Qtd|floatformat:1 }} un/mês</span>
+                                {% else %}
+                                    <span class="text-muted">0,0 un/mês</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-center text-nowrap">
+                                <span class="badge {{ f.Badge_Tendencia }}">{{ f.Status_Tendencia }} ({{ f.Variacao_Pct|floatformat:1 }}%)</span>
+                            </td>
+                            <td class="text-center text-nowrap"><small class="text-muted">{{ f.Historico_Mensal_Str }}</small></td>
+                            <td class="text-end fw-bold text-nowrap" data-order="{{ f.Estoque_Atual }}">{{ f.Estoque_Atual }} un</td>
+                            <td class="text-center text-nowrap" data-order="{{ f.Cobertura_Meses|stringformat:'.2f' }}">
+                                {% if f.Consumo_Medio_Mensal_Qtd > 0 %}
+                                    {{ f.Cobertura_Meses|floatformat:1 }} m
+                                {% else %}
+                                    <span class="text-muted">∞</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end fw-bold text-nowrap {% if f.Qtd_Sugerida_Compra > 0 %}text-danger col-compra-ativa{% else %}text-muted{% endif %}"
+                                data-order="{{ f.Qtd_Sugerida_Compra }}">
+                                {% if f.Qtd_Sugerida_Compra > 0 %}+{{ f.Qtd_Sugerida_Compra }} un{% else %}-{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tabela 2: Ranking dos Fornecedores Mais Comprados (Base de Giro) -->
+        <div class="card card-kpi bg-white p-4 mb-5">
+            <h4 class="fw-bold mb-1">🛒 Ranking dos Fornecedores Mais Comprados (Base de Giro: {{ dias_analise }} dias)</h4>
+            <p class="text-muted small mb-3">
+                Fornecedores com maior volume de compras de mercadoria/estoque registradas nos últimos {{ dias_analise }} dias.
+            </p>
+            <div>
+                <table id="tabelaFornecedoresComprados" class="table table-hover align-middle w-100">
+                    <thead>
+                        <tr>
+                            <th class="text-center">#</th>
+                            <th>Fornecedor</th>
+                            <th class="text-center">Títulos / Pedidos</th>
+                            <th class="text-end">Média / Mês (Títulos)</th>
+                            {% if pode_ver_valores_financeiros %}
+                            <th class="text-end">Total Comprado ({{ dias_analise }}d)</th>
+                            <th class="text-end">Média Compra / Mês (R$)</th>
+                            <th class="text-end">% Part. Compras</th>
+                            {% endif %}
+                            <th class="text-center">Última Compra</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for fc in tabela_fornecedores_comprados %}
+                        <tr>
+                            <td class="text-center fw-bold text-nowrap">
+                                {% if pode_ver_valores_financeiros %}{{ fc.Posicao }}º{% else %}{{ fc.Posicao_Qtd }}º{% endif %}
+                            </td>
+                            <td class="fw-bold">{{ fc.Fornecedor }}</td>
+                            <td class="text-center fw-semibold" data-order="{{ fc.Qtd_Titulos }}">{{ fc.Qtd_Titulos }}</td>
+                            <td class="text-end" data-order="{{ fc.Media_Mensal_Qtd|stringformat:'.2f' }}">{{ fc.Media_Mensal_Qtd|floatformat:1 }}/mês</td>
+                            {% if pode_ver_valores_financeiros %}
+                            <td class="text-end fw-bold text-primary text-nowrap" data-order="{{ fc.Valor_Total_Comprado|stringformat:'.2f' }}">
+                                R$ {{ fc.Valor_Total_Comprado|floatformat:2 }}
+                            </td>
+                            <td class="text-end text-nowrap" data-order="{{ fc.Media_Mensal_Compra|stringformat:'.2f' }}">
+                                R$ {{ fc.Media_Mensal_Compra|floatformat:2 }}/mês
+                            </td>
+                            <td class="text-end text-nowrap" data-order="{{ fc.Pct_Compras|stringformat:'.2f' }}">
+                                {{ fc.Pct_Compras|floatformat:1 }}%
+                            </td>
+                            {% endif %}
+                            <td class="text-center text-nowrap">{{ fc.Ultima_Compra_Str }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -950,6 +1271,8 @@
         $('#tabelaRanking').DataTable(dtConfig);
         $('#tabelaClienteProdutos').DataTable(dtConfig);
         $('#tabelaParados').DataTable(dtConfig);
+        $('#tabelaFornecedoresVendas').DataTable(dtConfig);
+        $('#tabelaFornecedoresComprados').DataTable(dtConfig);
 
         // Redimensiona gráficos Plotly quando o usuário troca de aba Bootstrap
         $('button[data-bs-toggle="tab"]').on('shown.bs.tab', function () {

@@ -144,7 +144,7 @@
 <!-- Linha de KPIs Executivos -->
 <div class="row g-3 mb-4">
     <!-- 1. Total Vendas + Comparativos MoM / YoY -->
-    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-2{% else %}col-xl-3{% endif %} col-md-4 col-6">
+    <div class="col-xl-2 col-md-4 col-6">
         <div class="card card-metric p-3 bg-white border-start border-success border-4 h-100">
             <span class="text-muted small fw-bold">💰 Faturamento Realizado</span>
             <h4 class="fw-bold text-success mb-1 mt-1">{{ metricas.total_vendas }}</h4>
@@ -160,22 +160,22 @@
     </div>
 
     <!-- 2. Meta do Período & Status do Ritmo -->
-    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-3{% else %}col-xl-3{% endif %} col-md-4 col-6">
+    <div class="col-xl-2 col-md-4 col-6">
         <div class="card card-metric p-3 bg-white border-start border-primary border-4 h-100">
             <div class="d-flex justify-content-between align-items-center">
                 <span class="text-muted small fw-bold">🎯 Meta do Mês</span>
                 <span class="{{ metricas.status_class }}" style="font-size: 0.70rem;">{{ metricas.status_meta }}</span>
             </div>
-            <h4 class="fw-bold text-primary mb-1 mt-1">{{ metricas.meta_total }} <small class="fs-6 text-dark">({{ metricas.percentual_meta }})</small></h4>
+            <h5 class="fw-bold text-primary mb-1 mt-1">{{ metricas.meta_total }} <small class="fs-6 text-dark">({{ metricas.percentual_meta }})</small></h5>
             <small class="text-muted" style="font-size: 0.75rem;">{{ metricas.dias_info }}</small>
         </div>
     </div>
 
     <!-- 3. Projeção de Fechamento do Mês -->
-    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-2{% else %}col-xl-2{% endif %} col-md-4 col-6">
+    <div class="col-xl-2 col-md-4 col-6">
         <div class="card card-metric p-3 bg-white border-start border-info border-4 h-100">
             <span class="text-muted small fw-bold">🔮 Projeção Fechamento</span>
-            <h4 class="fw-bold text-info-emphasis mb-1 mt-1">{{ metricas.projecao_fechamento }}</h4>
+            <h5 class="fw-bold text-info-emphasis mb-1 mt-1">{{ metricas.projecao_fechamento }}</h5>
             <small class="text-muted">
                 {% if metricas.mes_encerrado %}
                     Mês encerrado ({{ metricas.projecao_pct_meta }} da meta)
@@ -187,16 +187,16 @@
     </div>
 
     <!-- 4. Nº de Vendas e Clientes Atendidos -->
-    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-2{% else %}col-xl-2{% endif %} col-md-6 col-6">
+    <div class="col-xl-2 col-md-4 col-6">
         <div class="card card-metric p-3 bg-white border-start border-secondary border-4 h-100">
             <span class="text-muted small fw-bold">🧾 Volume & Clientes</span>
-            <h4 class="fw-bold text-dark mb-1 mt-1">{{ metricas.num_vendas }} <small class="fs-6 fw-normal text-muted">NFs</small></h4>
+            <h5 class="fw-bold text-dark mb-1 mt-1">{{ metricas.num_vendas }} <small class="fs-6 fw-normal text-muted">NFs</small></h5>
             <small class="text-muted"><strong>{{ metricas.num_clientes }}</strong> clientes atendidos no mês</small>
         </div>
     </div>
 
     <!-- 5. Ticket Médio -->
-    <div class="{% if pode_ver_margem and metricas.tem_margem %}col-xl-1{% else %}col-xl-2{% endif %} col-md-6 col-6">
+    <div class="col-xl-2 col-md-4 col-6">
         <div class="card card-metric p-3 bg-white border-start border-dark border-4 h-100">
             <span class="text-muted small fw-bold">🏷️ Ticket Médio</span>
             <h5 class="fw-bold text-dark mb-1 mt-1">{{ metricas.ticket_medio }}</h5>
@@ -204,14 +204,30 @@
         </div>
     </div>
 
-    <!-- 6. Margem Bruta Estimada (Exclusivo Admin) -->
+    <!-- 6. Prazo Médio Praticado nas Vendas do Mês -->
+    <div class="col-xl-2 col-md-4 col-6">
+        <div class="card card-metric p-3 bg-white border-start border-primary border-4 h-100"
+             title="Prazo médio ponderado pelo valor das Notas Fiscais emitidas no período selecionado">
+            <span class="text-muted small fw-bold">⏱️ Prazo Médio Praticado</span>
+            <h5 class="fw-bold text-primary mb-1 mt-1">{{ metricas.prazo_medio_dias }}</h5>
+            <small class="text-muted">
+                {% if vendedora_selecionada != 'EMPRESA' %}
+                    Vendedor: <strong>{{ vendedora_selecionada }}</strong>
+                {% else %}
+                    Média simples: <strong>{{ metricas.prazo_medio_simples_dias }}</strong>
+                {% endif %}
+            </small>
+        </div>
+    </div>
+
+    <!-- 7. Margem Bruta Estimada (Exclusivo Admin) -->
     {% if pode_ver_margem and metricas.tem_margem %}
-    <div class="col-xl-2 col-md-6 col-6">
+    <div class="col-xl-3 col-md-6 col-12">
         <div class="card card-metric p-3 bg-white border-start border-warning border-4 h-100"
              title="Calculado a partir dos itens faturados no período vs custo unitário de referência (Visível apenas para Administrador)">
             <span class="text-muted small fw-bold">📈 Lucro Bruto Est.</span>
             <h5 class="fw-bold text-success mb-1 mt-1">{{ metricas.margem_bruta_valor }}</h5>
-            <small class="text-muted">Margem: <strong>{{ metricas.margem_bruta_pct }}</strong></small>
+            <small class="text-muted">Margem: <strong>{{ metricas.margem_bruta_pct }}</strong> | Custo CMV: {{ metricas.custo_total_mes }}</small>
         </div>
     </div>
     {% endif %}
@@ -262,6 +278,21 @@
     </div>
 </div>
 
+{% if pode_ver_comparativo_prazo %}
+<!-- Linha Extra (Admin / Supervisor): Comparativo de Prazo Médio Praticado entre Vendedores Ativos -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card card-kpi p-3 bg-white">
+            {% if grafico_prazo_vendedores %}
+                {{ grafico_prazo_vendedores|safe }}
+            {% else %}
+                <div class="text-center p-4 text-muted">Sem dados de prazo nas vendas do período para comparar vendedores ativos.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Linha 3: Nº de Notas por Dia + Tabela de Notas Fiscais Emitidas no Período -->
 <div class="row g-3 mb-5">
     <div class="col-lg-4">
@@ -289,6 +320,7 @@
                             <th>Data Emissão</th>
                             <th>Cliente (Consolidado por CNPJ)</th>
                             <th>Vendedor</th>
+                            <th class="text-center">Prazo</th>
                             <th class="text-end">Valor Total (R$)</th>
                         </tr>
                     </thead>
@@ -305,6 +337,9 @@
                                 </a>
                             </td>
                             <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ nf.vendedor_nome }}</span></td>
+                            <td class="text-center text-nowrap" data-order="{{ nf.prazo_dias_order|stringformat:'.2f' }}">
+                                <span class="badge bg-primary-subtle text-primary border">{{ nf.prazo_label|default:"-" }}</span>
+                            </td>
                             <td class="text-end fw-bold text-success text-nowrap" data-order="{{ nf.valor_total|stringformat:'.2f' }}">
                                 R$ {{ nf.valor_total|floatformat:2 }}
                             </td>

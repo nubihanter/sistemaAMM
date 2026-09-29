@@ -190,7 +190,7 @@ def disparar_sincronizacao_background(
     """
     Dispara uma tarefa de sincronização em thread de segundo plano (não bloqueia a requisição HTTP)
     e previne execuções concorrentes duplicadas do mesmo tipo nos últimos 15 minutos.
-    Retorna (iniciou_novo: bool, log: LogSincronizacao).
+    Retorna (log: LogSincronizacao, iniciou_novo: bool).
     """
     import threading
     from django.db import close_old_connections
@@ -206,7 +206,7 @@ def disparar_sincronizacao_background(
         .first()
     )
     if em_andamento:
-        return False, em_andamento
+        return em_andamento, False
 
     log = LogSincronizacao.objects.create(
         tipo=tipo,
@@ -247,7 +247,7 @@ def disparar_sincronizacao_background(
         daemon=True,
     )
     thread.start()
-    return True, log
+    return log, True
 
 
 def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
@@ -935,18 +935,20 @@ def sincronizar_contas_pagar_hardness(
 
 def sincronizar_financeiro_hardness(
     data_inicio: str = None,
-    data_fim: str = None,
+    data_fim: str = "",
     empresa_nome: str = None,
     dias_retroativos_padrao: int = 30,
 ):
     """
     Rotina unificada de atualização financeira (Contas a Receber + Contas a Pagar).
+    Por padrão sincroniza com data_fim vazia ("") para capturar todas as despesas
+    e entradas além do mês corrente.
     Se data_inicio não for informada:
       - Caso o banco esteja vazio, busca desde 01/01 do ano atual.
       - Caso já possua registros, volta `dias_retroativos_padrao` (padrão 30 dias) para
         capturar baixas/pagamentos de títulos emitidos anteriormente.
     """
-    hoje = timezone.now().date()
+    hoje = timezone.now().date()+timedelta(years=1)
     data_fim_str = data_fim or hoje.strftime("%d/%m/%Y")
 
     if data_inicio:
@@ -957,8 +959,11 @@ def sincronizar_financeiro_hardness(
         ult_cp = ContaPagar.objects.aggregate(Max("data_emissao"))["data_emissao__max"]
         inicio_ano = date(hoje.year, 1, 1)
 
-        dt_cr = (ult_cr - timedelta(days=dias_retroativos_padrao)) if ult_cr else inicio_ano
-        dt_cp = (ult_cp - timedelta(days=dias_retroativos_padrao)) if ult_cp else inicio_ano
+        ref_cr = min(ult_cr, hoje) if ult_cr else None
+        ref_cp = min(ult_cp, hoje) if ult_cp else None
+
+        dt_cr = (ref_cr - timedelta(days=dias_retroativos_padrao)) if ref_cr else inicio_ano
+        dt_cp = (ref_cp - timedelta(days=dias_retroativos_padrao)) if ref_cp else inicio_ano
         data_inicio_cr = dt_cr.strftime("%d/%m/%Y")
         data_inicio_cp = dt_cp.strftime("%d/%m/%Y")
 

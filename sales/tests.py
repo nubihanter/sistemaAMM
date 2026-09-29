@@ -509,6 +509,130 @@ class FinanceiroAndOrcamentosSyncTests(TestCase):
         self.assertEqual(len(resp_fin.context["resumo_portadores"]), 1)
         self.assertEqual(resp_fin.context["resumo_portadores"][0]["portador"], "BOLETO SICREDI")
         self.assertEqual(resp_fin.context["resumo_portadores"][0]["saldo_liquido_conciliado"], 1800.0)
+        self.assertEqual(resp_fin.context["resumo_portadores"][0]["pct_entradas"], 100.0)
+        self.assertEqual(resp_fin.context["resumo_portadores"][0]["pct_saidas"], 100.0)
+        # Confirma que o gráfico DRE é de cascatas (waterfall) e os gráficos de portador são de pizza (pie)
+        self.assertIn('"type": "waterfall"', resp_fin.context["grafico_dre"])
+        self.assertIn('"type": "pie"', resp_fin.context["grafico_pizza_entradas"])
+        self.assertIn('"type": "pie"', resp_fin.context["grafico_pizza_saidas"])
 
+    def test_disparar_sincronizacao_background_returns_log_first_without_bool_error(self):
+        from unittest.mock import MagicMock, patch
+        from sales.services import disparar_sincronizacao_background
 
+        with patch("threading.Thread", return_value=MagicMock()):
+            log, iniciou = disparar_sincronizacao_background(
+                tipo="NOTAS_HARDNESS",
+                funcao_sync=lambda: (2, 1),
+                origem="MANUAL_PAINEL",
+                usuario="admin_test",
+            )
+            self.assertTrue(iniciou)
+            self.assertEqual(log.get_tipo_display(), "Notas Fiscais (Hardness)")
 
+            # Segunda chamada com job em andamento também deve retornar (LogSincronizacao, False)
+            log_em_andamento, iniciou_novamente = disparar_sincronizacao_background(
+                tipo="NOTAS_HARDNESS",
+                funcao_sync=lambda: (2, 1),
+                origem="MANUAL_PAINEL",
+                usuario="admin_test",
+            )
+            self.assertFalse(iniciou_novamente)
+            self.assertEqual(log_em_andamento.id, log.id)
+            self.assertEqual(log_em_andamento.get_tipo_display(), "Notas Fiscais (Hardness)")
+
+    def test_sincronizar_financeiro_hardness_uses_empty_data_fim_by_default(self):
+        from unittest.mock import patch
+        from sales.services import sincronizar_financeiro_hardness
+
+        chamadas_cr = []
+        chamadas_cp = []
+
+        class DummyAPI:
+            def login(self):
+                return True
+
+        with (
+            patch("sales.services.HardnessAPI", return_value=DummyAPI()),
+            patch(
+                "sales.services.sincronizar_contas_receber_hardness",
+                side_effect=lambda **kw: (chamadas_cr.append(kw) or (1, 0)),
+            ),
+            patch(
+                "sales.services.sincronizar_contas_pagar_hardness",
+                side_effect=lambda **kw: (chamadas_cp.append(kw) or (1, 0)),
+            ),
+        ):
+            sincronizar_financeiro_hardness()
+
+        self.assertEqual(len(chamadas_cr), 1)
+        self.assertEqual(len(chamadas_cp), 1)
+        self.assertEqual(chamadas_cr[0]["data_fim"], "")
+        self.assertEqual(chamadas_cp[0]["data_fim"], "")
+
+    def test_vendas_prazo_medio_por_vendedor_e_grafico_comparativo_restrito(self):
+        admin_user = User.objects.create_user(
+            username="admin_prazo",
+            password="123",
+            role=User.Role.ADMINISTRADOR,
+        )
+        supervisor_user = User.objects.create_user(
+            username="sup_prazo",
+            password="123",
+            role=User.Role.SUPERVISOR,
+        )
+        vend_aline = User.objects.create_user(
+            username="aline_user",
+            password="123",
+            role=User.Role.VENDEDOR,
+            nome_vendedor_erp="ALINE",
+        )
+
+        Vendedor.objects.update_or_create(
+            nome_hardness="ALINE",
+            defaults={"ativo": True, "ativo_ranking": True},
+        )
+        Vendedor.objects.update_or_create(
+            nome_hardness="BRUNO",
+            defaults={"ativo": True, "ativo_ranking": True},
+        )
+
+        # ALINE: NF de R$ 1.000 com prazo 28/42 (média 35 dias)
+        NotaFiscal.objects.create(
+            empresa="AMM EPIS",
+            numero_nota="NF-ALINE-1",
+            data_emissao=date(2026, 9, 10),
+            cliente_nome="CLIENTE ALINE",
+            vendedor_nome="ALINE",
+            valor_total=Decimal("1000.00"),
+            status="AUTORIZADA",
+            dados_brutos={"T007_Prazos(T007_Id)": "28/42"},
+        )
+        # BRUNO: NF de R$ 2.000 com prazo 28 dias
+        NotaFiscal.objects.create(
+            empresa="AMM EPIS",
+            numero_nota="NF-BRUNO-1",
+            data_emissao=date(2026, 9, 12),
+            cliente_nome="CLIENTE BRUNO",
+            vendedor_nome="BRUNO",
+            valor_total=Decimal("2000.00"),
+            status="AUTORIZADA",
+            dados_brutos={"T007_Prazos(T007_Id)": "28"},
+        )
+
+        # 1. Vendedor ALINE vê apenas o seu prazo médio (35.0 dias) e NÃO recebe o gráfico comparativo
+        self.client.force_login(vend_aline)
+        resp_vend = self.client.get(reverse("dashboard_vendas") + "?mes=9&ano=2026")
+        self.assertEqual(resp_vend.status_code, 200)
+        self.assertEqual(resp_vend.context["metricas"]["prazo_medio_dias"], "35.0 dias")
+        self.assertFalse(resp_vend.context["pode_ver_comparativo_prazo"])
+        self.assertEqual(resp_vend.context["grafico_prazo_vendedores"], "")
+
+        # 2. Supervisor e Admin recebem o gráfico comparativo entre todos os vendedores ativos
+        for usr in (supervisor_user, admin_user):
+            self.client.force_login(usr)
+            resp_adm = self.client.get(reverse("dashboard_vendas") + "?mes=9&ano=2026")
+            self.assertEqual(resp_adm.status_code, 200)
+            self.assertTrue(resp_adm.context["pode_ver_comparativo_prazo"])
+            self.assertIn("ALINE", resp_adm.context["grafico_prazo_vendedores"])
+            self.assertIn("BRUNO", resp_adm.context["grafico_prazo_vendedores"])

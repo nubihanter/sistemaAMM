@@ -276,12 +276,12 @@
     </div>
 </div>
 
-<!-- Seção 2: Resumo de Conciliação Bancária por Portador / Banco -->
+<!-- Seção 2: Conciliação Bancária por Portador / Forma de Pagamento (Gráficos de Pizza) -->
 <div class="card card-kpi p-4 bg-white mb-4">
     <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
         <div>
             <h5 class="fw-bold mb-0">🏦 Conciliação Bancária por Portador / Forma de Pagamento</h5>
-            <small class="text-muted">Clique em um Portador para filtrar os lançamentos de entrada e saída abaixo e bater com o extrato bancário.</small>
+            <small class="text-muted">Distribuição percentual de entradas e saídas em cada portador/forma de pagamento no período.</small>
         </div>
         {% if portador_filtro != 'TODOS' %}
         <a href="{% url 'dashboard_financeiro' %}?empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador=TODOS&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
@@ -290,47 +290,40 @@
         </a>
         {% endif %}
     </div>
-    <div class="table-responsive">
-        <table class="table table-sm table-hover align-middle mb-0">
-            <thead class="table-dark">
-                <tr>
-                    <th>Portador / Banco</th>
-                    <th class="text-center">Títulos Baixados (CR / CP)</th>
-                    <th class="text-end">Entradas Recebidas (R$)</th>
-                    <th class="text-end">Saídas Pagas (R$)</th>
-                    <th class="text-end">Saldo Líquido Realizado (R$)</th>
-                    <th class="text-end">A Receber no Mês (R$)</th>
-                    <th class="text-end">A Pagar no Mês (R$)</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for rp in resumo_portadores %}
-                <tr class="{% if portador_filtro == rp.portador %}table-primary{% endif %}">
-                    <td class="fw-bold">
-                        <a href="{% url 'dashboard_financeiro' %}?empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador={{ rp.portador|urlencode }}&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
-                           class="text-decoration-none text-dark">
-                            🏦 {{ rp.portador }}
-                        </a>
-                    </td>
-                    <td class="text-center">
-                        <span class="badge bg-success-subtle text-success border">{{ rp.qtd_cr_baixados }} CR</span>
-                        <span class="badge bg-danger-subtle text-danger border ms-1">{{ rp.qtd_cp_baixados }} CP</span>
-                    </td>
-                    <td class="text-end fw-semibold text-success">R$ {{ rp.entradas_recebidas|floatformat:2 }}</td>
-                    <td class="text-end fw-semibold text-danger">R$ {{ rp.saidas_pagas|floatformat:2 }}</td>
-                    <td class="text-end fw-bold {% if rp.saldo_liquido_conciliado >= 0 %}text-primary{% else %}text-danger{% endif %}">
-                        R$ {{ rp.saldo_liquido_conciliado|floatformat:2 }}
-                    </td>
-                    <td class="text-end text-muted">R$ {{ rp.entradas_a_receber|floatformat:2 }}</td>
-                    <td class="text-end text-muted">R$ {{ rp.saidas_a_pagar|floatformat:2 }}</td>
-                </tr>
-                {% empty %}
-                <tr>
-                    <td colspan="7" class="text-center text-muted py-3">Nenhuma movimentação encontrada para os filtros selecionados.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+
+    {% if resumo_portadores %}
+    <div class="d-flex flex-wrap gap-2 mb-3 no-print">
+        {% for rp in resumo_portadores %}
+        <a href="{% url 'dashboard_financeiro' %}?empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador={{ rp.portador|urlencode }}&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
+           class="btn btn-sm {% if portador_filtro == rp.portador %}btn-primary fw-bold{% else %}btn-outline-secondary{% endif %} d-flex align-items-center gap-1"
+           title="Filtrar lançamentos por {{ rp.portador }}">
+            🏦 {{ rp.portador }}
+            <span class="badge bg-success-subtle text-success border">{{ rp.pct_entradas|floatformat:1 }}% Ent.</span>
+            <span class="badge bg-danger-subtle text-danger border">{{ rp.pct_saidas|floatformat:1 }}% Saí.</span>
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="row g-3">
+        <div class="col-lg-6">
+            <div class="border rounded p-2 h-100 bg-light-subtle">
+                {% if grafico_pizza_entradas %}
+                    {{ grafico_pizza_entradas|safe }}
+                {% else %}
+                    <div class="text-center p-5 text-muted">Sem entradas registradas para exibir por forma de pagamento.</div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="border rounded p-2 h-100 bg-light-subtle">
+                {% if grafico_pizza_saidas %}
+                    {{ grafico_pizza_saidas|safe }}
+                {% else %}
+                    <div class="text-center p-5 text-muted">Sem saídas registradas para exibir por forma de pagamento.</div>
+                {% endif %}
+            </div>
+        </div>
     </div>
 </div>
 

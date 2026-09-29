@@ -212,7 +212,7 @@
                     {% endif %}
                 </div>
                 <p class="small text-muted mb-2">
-                    Sincroniza títulos de Contas a Receber (<code>fin001</code>) e Contas a Pagar (<code>fin002</code>) nas empresas do grupo. Em branco = últimos 30 dias.
+                    Sincroniza títulos de Contas a Receber (<code>fin001</code>) e Contas a Pagar (<code>fin002</code>) nas empresas do grupo. Data fim vazia = busca todas as despesas e entradas futuras além do mês corrente.
                 </p>
             </div>
             <form method="post" action="{% url 'disparar_sincronizacao' %}" class="form-sync-trigger mt-2">

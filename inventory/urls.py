@@ -9,4 +9,5 @@ urlpatterns = [
     path("produto/parametros/", views.atualizar_parametros_produto_view, name="atualizar_parametros_produto"),
     path("sincronizar/", views.sincronizar_estoque_manual_view, name="sincronizar_estoque_manual"),
     path("exportar-csv/", views.exportar_compras_csv_view, name="exportar_compras_csv"),
+    path("exportar-parados/", views.exportar_parados_excel_view, name="exportar_parados_excel"),
 ]

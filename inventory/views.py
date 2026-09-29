@@ -71,8 +71,17 @@ def dashboard_estoque_view(request):
         apenas_criticos=apenas_criticos,
     )
 
-    if not pode_ver_valores_financeiros and dados.get("tabela_ranking"):
-        dados["tabela_ranking"] = sorted(dados["tabela_ranking"], key=lambda x: x.get("Posicao_Qtd", 9999))
+    if not pode_ver_valores_financeiros:
+        if dados.get("tabela_ranking"):
+            dados["tabela_ranking"] = sorted(dados["tabela_ranking"], key=lambda x: x.get("Posicao_Qtd", 9999))
+        if dados.get("tabela_fornecedores_comprados"):
+            dados["tabela_fornecedores_comprados"] = sorted(
+                dados["tabela_fornecedores_comprados"], key=lambda x: x.get("Posicao_Qtd", 9999)
+            )
+        if dados.get("tabela_fornecedores_vendas"):
+            dados["tabela_fornecedores_vendas"] = sorted(
+                dados["tabela_fornecedores_vendas"], key=lambda x: x.get("Posicao_Qtd", 9999)
+            )
 
     context = {
         **dados,
@@ -389,6 +398,142 @@ def exportar_compras_csv_view(request):
     buffer.seek(0)
 
     filename = f"planejamento_estoque_compras_amm_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@login_required
+def exportar_parados_excel_view(request):
+    """
+    Exporta a tabela da aba de Produtos Parados & Excesso em Excel (.xlsx).
+    Conforme regra de negócio, a exportação vai SEM a informação de custo e capital empatado.
+    """
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    try:
+        dias_analise = int(request.GET.get("dias", 90))
+    except ValueError:
+        dias_analise = 90
+    try:
+        cobertura_meses = float(request.GET.get("cobertura", 2.0))
+    except ValueError:
+        cobertura_meses = 2.0
+    try:
+        teto_meses = float(request.GET.get("teto", 4.0))
+    except ValueError:
+        teto_meses = 4.0
+
+    marca_selecionada = request.GET.get("marca", "TODAS").strip()
+
+    dados = gerar_analise_estoque_e_compras(
+        dias_analise=dias_analise,
+        cobertura_meses=cobertura_meses,
+        teto_meses=teto_meses,
+        marca_selecionada=marca_selecionada,
+        gerar_graficos=False,
+        incluir_aba_cliente=False,
+    )
+
+    lista_parados = dados.get("tabela_parados", [])
+    if marca_selecionada and marca_selecionada != "TODAS":
+        lista_parados = [r for r in lista_parados if str(r.get("marca")) == marca_selecionada]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Produtos Parados e Excesso"
+
+    cabecalho = [
+        "Código (SKU)",
+        "Descrição do Produto",
+        "Marca",
+        "Unidade",
+        "CA",
+        "Diagnóstico",
+        f"Vendas ({dias_analise}d)",
+        "Média / Mês (un)",
+        "Estoque Atual",
+        f"Teto Ideal ({teto_meses:g}M)",
+        "Qtd Parada / Excesso",
+        "Última Venda",
+        "Dias Sem Vender",
+    ]
+    ws.append(cabecalho)
+
+    header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=10)
+    thin_border = Border(
+        left=Side(style="thin", color="E2E8F0"),
+        right=Side(style="thin", color="E2E8F0"),
+        top=Side(style="thin", color="E2E8F0"),
+        bottom=Side(style="thin", color="E2E8F0"),
+    )
+
+    for col_idx in range(1, len(cabecalho) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    status_fills = {
+        "ACIMA DO NECESSÁRIO": PatternFill(start_color="E0F2FE", end_color="E0F2FE", fill_type="solid"),
+        "PARADO (SEM GIRO)": PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid"),
+    }
+
+    for row_idx, r in enumerate(lista_parados, start=2):
+        dias_sem_vender_val = int(r["Dias_Sem_Vender"]) if int(r.get("Dias_Sem_Vender", 999)) < 999 else "Sem registro"
+        teto_val = int(r["Teto_Estoque"]) if float(r.get("Qtd_Vendida", 0)) > 0 else 0
+        linha = [
+            str(r["codigo_produto"]),
+            r["nome"],
+            r["marca"],
+            r["unidade_medida"],
+            r.get("ca__numero_ca", "-"),
+            r["Status"],
+            int(round(float(r["Qtd_Vendida"]))),
+            round(float(r["Vendas_Media_Mes"]), 1),
+            int(r["estoque_atual"]),
+            teto_val,
+            int(r["Qtd_Excesso"]),
+            r.get("Ultima_Venda_Str", "-"),
+            dias_sem_vender_val,
+        ]
+        ws.append(linha)
+
+        ws.cell(row=row_idx, column=8).number_format = "0.0"
+        status_cell = ws.cell(row=row_idx, column=6)
+        if r["Status"] in status_fills:
+            status_cell.fill = status_fills[r["Status"]]
+            status_cell.font = Font(bold=True, size=9)
+
+        for c_i in range(1, len(cabecalho) + 1):
+            ws.cell(row=row_idx, column=c_i).border = thin_border
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    ws.row_dimensions[1].height = 26
+
+    for col_idx in range(1, len(cabecalho) + 1):
+        col_letter = get_column_letter(col_idx)
+        header_len = len(str(cabecalho[col_idx - 1]))
+        max_len = header_len
+        for row_idx in range(2, min(ws.max_row + 1, 200)):
+            val = ws.cell(row=row_idx, column=col_idx).value
+            if val is not None:
+                max_len = max(max_len, len(str(val)))
+        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 45)
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    filename = f"produtos_parados_excesso_amm_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     response = HttpResponse(
         buffer.getvalue(),
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

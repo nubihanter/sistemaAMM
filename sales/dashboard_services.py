@@ -203,6 +203,153 @@ def _calcular_margem_periodo(data_ini: date, data_fim: date, vendedora_seleciona
     }
 
 
+def _extrair_prazo_dias_texto(texto_prazo):
+    """
+    Converte a string de condição/prazo do Hardness ERP (ex: '28', '28/42', '28/35/42',
+    '30/60/90', 'A VISTA') no prazo médio em dias da nota fiscal.
+    Retorna tuple (prazo_medio_float | None, label_formatado: str).
+    """
+    if texto_prazo is None:
+        return None, "-"
+    if isinstance(texto_prazo, (int, float)) and not pd.isna(texto_prazo):
+        val = max(0.0, float(texto_prazo))
+        return val, ("À Vista (0d)" if val == 0 else f"{val:.0f}d")
+
+    s = str(texto_prazo).strip().upper()
+    if not s or s in ("-", "NONE", "NULL", "NAN"):
+        return None, "-"
+    if "VISTA" in s or "ANTECIP" in s or s == "0":
+        return 0.0, "À Vista (0d)"
+
+    nums = [max(0.0, float(x)) for x in re.findall(r"-?\d+", s)]
+    if nums:
+        media = sum(nums) / len(nums)
+        if len(nums) == 1:
+            return media, f"{int(round(media))} dias"
+        return media, f"{s} ({media:.0f}d)"
+    return None, s
+
+
+def _enriquecer_prazos_notas_mes(df_mes: pd.DataFrame, ano_selecionado: int, mes_selecionado: int) -> pd.DataFrame:
+    """
+    Enriquece o DataFrame de notas do mês com `prazo_dias` (float/NaN) e `prazo_label` (str),
+    extraindo de `dados_brutos['T007_Prazos(T007_Id)']` (ou consultando NotaFiscal / ContaReceber).
+    """
+    if df_mes.empty:
+        df_vazio = df_mes.copy()
+        df_vazio["prazo_dias"] = pd.Series(dtype="float64")
+        df_vazio["prazo_label"] = pd.Series(dtype="object")
+        return df_vazio
+
+    df_out = df_mes.copy()
+    mapa_prazo_bruto = {}
+
+    if "dados_brutos" in df_out.columns:
+        for num_nf, db in zip(df_out["numero_nota"], df_out["dados_brutos"]):
+            if isinstance(db, dict):
+                raw_p = db.get("T007_Prazos(T007_Id)") or db.get("prazo") or db.get("prazo_dias")
+                if raw_p is not None and str(raw_p).strip():
+                    mapa_prazo_bruto[str(num_nf)] = raw_p
+
+    notas_sem_prazo = [
+        str(n) for n in df_out["numero_nota"].dropna().unique() if str(n) not in mapa_prazo_bruto
+    ]
+    if notas_sem_prazo:
+        for nf_row in (
+            NotaFiscal.objects.exclude(status="CANCELADA")
+            .filter(
+                data_emissao__year=ano_selecionado,
+                data_emissao__month=mes_selecionado,
+                numero_nota__in=notas_sem_prazo,
+            )
+            .values("numero_nota", "dados_brutos")
+        ):
+            db = nf_row.get("dados_brutos")
+            if isinstance(db, dict):
+                raw_p = db.get("T007_Prazos(T007_Id)") or db.get("prazo") or db.get("prazo_dias")
+                if raw_p is not None and str(raw_p).strip():
+                    mapa_prazo_bruto[str(nf_row["numero_nota"])] = raw_p
+
+    # Fallback secundário via ContaReceber (caso alguma nota não tenha T007_Prazos em dados_brutos)
+    faltantes_cr = [n for n in notas_sem_prazo if n not in mapa_prazo_bruto]
+    if faltantes_cr:
+        cr_rows = (
+            ContaReceber.objects.filter(
+                cancelada=False,
+                numero_documento__in=faltantes_cr,
+            )
+            .values("numero_documento", "prazo_dias", "data_emissao", "data_vencimento")
+        )
+        prazos_por_doc = {}
+        for cr in cr_rows:
+            doc = str(cr.get("numero_documento") or "").strip()
+            if not doc:
+                continue
+            p_dias = cr.get("prazo_dias")
+            if p_dias is None and cr.get("data_vencimento") and cr.get("data_emissao"):
+                p_dias = (cr["data_vencimento"] - cr["data_emissao"]).days
+            if p_dias is not None:
+                prazos_por_doc.setdefault(doc, []).append(max(0.0, float(p_dias)))
+        for doc, lista_p in prazos_por_doc.items():
+            if lista_p:
+                mapa_prazo_bruto[doc] = "/".join(str(int(round(x))) for x in sorted(lista_p))
+
+    prazos_num = []
+    prazos_lbl = []
+    for num_nf in df_out["numero_nota"].astype(str):
+        p_val, p_lbl = _extrair_prazo_dias_texto(mapa_prazo_bruto.get(num_nf))
+        prazos_num.append(np.nan if p_val is None else float(p_val))
+        prazos_lbl.append(p_lbl)
+
+    df_out["prazo_dias"] = pd.Series(prazos_num, index=df_out.index, dtype="float64")
+    df_out["prazo_label"] = pd.Series(prazos_lbl, index=df_out.index, dtype="object")
+    return df_out
+
+
+def _calcular_resumo_prazo_df(df_sub: pd.DataFrame) -> dict:
+    """
+    Calcula o prazo médio ponderado pelo valor da NF e o prazo médio simples de um subconjunto de notas.
+    """
+    if df_sub.empty or "prazo_dias" not in df_sub.columns:
+        return {
+            "tem_prazo": False,
+            "prazo_medio_valor": 0.0,
+            "prazo_medio_simples": 0.0,
+            "prazo_medio_dias": "Sem dados",
+            "prazo_medio_simples_dias": "Sem dados",
+            "qtd_notas_com_prazo": 0,
+        }
+
+    df_val = df_sub.dropna(subset=["prazo_dias"]).copy()
+    if df_val.empty:
+        return {
+            "tem_prazo": False,
+            "prazo_medio_valor": 0.0,
+            "prazo_medio_simples": 0.0,
+            "prazo_medio_dias": "Sem dados",
+            "prazo_medio_simples_dias": "Sem dados",
+            "qtd_notas_com_prazo": 0,
+        }
+
+    pesos = pd.to_numeric(df_val["valor_total"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    prazos = df_val["prazo_dias"].astype(float)
+    soma_pesos = float(pesos.sum())
+    media_simples = float(prazos.mean())
+    if soma_pesos > 0:
+        media_pond = float((prazos * pesos).sum() / soma_pesos)
+    else:
+        media_pond = media_simples
+
+    return {
+        "tem_prazo": True,
+        "prazo_medio_valor": round(media_pond, 1),
+        "prazo_medio_simples": round(media_simples, 1),
+        "prazo_medio_dias": f"{media_pond:.1f} dias",
+        "prazo_medio_simples_dias": f"{media_simples:.1f} dias",
+        "qtd_notas_com_prazo": int(len(df_val)),
+    }
+
+
 def gerar_metricas_e_graficos(
     df,
     vendedora_selecionada,
@@ -234,6 +381,13 @@ def gerar_metricas_e_graficos(
         "margem_bruta_pct": "0.0%",
         "custo_total_mes": "R$ 0,00",
         "tem_margem": False,
+        "tem_prazo": False,
+        "prazo_medio_dias": "0.0 dias",
+        "prazo_medio_valor": 0.0,
+        "prazo_medio_simples_dias": "0.0 dias",
+        "qtd_notas_com_prazo": 0,
+        "grafico_prazo_vendedores": "",
+        "comparativo_prazo_vendedores": [],
     }
 
     if df.empty:
@@ -268,21 +422,62 @@ def gerar_metricas_e_graficos(
     else:
         dt_fim_yoy = pd.Timestamp(year=ano_selecionado - 1, month=mes_selecionado + 1, day=1) - timedelta(days=1)
 
+    # Enriquecimento de prazos médios para todas as notas do mês selecionado
+    df_periodo_geral = df[
+        (df["data_emissao"] >= data_inicio)
+        & (df["data_emissao"] <= data_fim)
+    ].copy()
+    df_periodo_geral = _enriquecer_prazos_notas_mes(df_periodo_geral, ano_selecionado, mes_selecionado)
+
     # Filtro de dados da visão atual
     if vendedora_selecionada == "EMPRESA":
         df_vendedor = df
+        df_filtered = df_periodo_geral.copy()
     else:
         df_vendedor = df[df["vendedor_nome"] == vendedora_selecionada]
-
-    df_filtered = df_vendedor[
-        (df_vendedor["data_emissao"] >= data_inicio)
-        & (df_vendedor["data_emissao"] <= data_fim)
-    ].copy()
+        df_filtered = df_periodo_geral[df_periodo_geral["vendedor_nome"] == vendedora_selecionada].copy()
 
     total_vendas = float(df_filtered["valor_total"].sum())
     num_vendas = len(df_filtered)
     num_clientes = int(df_filtered["cliente_nome"].nunique()) if not df_filtered.empty else 0
     ticket_medio = total_vendas / num_vendas if num_vendas > 0 else 0.0
+
+    # Prazo médio praticado na visão selecionada (Vendedor individual ou Empresa)
+    resumo_prazo_visao = _calcular_resumo_prazo_df(df_filtered)
+
+    # Comparativo de Prazo Médio entre todos os Vendedores Ativos no mês
+    vendedores_ativos_set = {
+        str(v).strip().upper()
+        for v in Vendedor.objects.filter(ativo=True).values_list("nome_hardness", flat=True)
+        if v and str(v).strip().upper() not in ("", "NAN", "NONE", "DESCONHECIDO")
+    }
+    if not vendedores_ativos_set and "vendedor_nome" in df_periodo_geral.columns:
+        vendedores_ativos_set = {
+            str(v).strip().upper()
+            for v in df_periodo_geral["vendedor_nome"].dropna().unique()
+            if str(v).strip().upper() not in ("", "NAN", "NONE", "DESCONHECIDO")
+        }
+
+    comparativo_prazo_vendedores = []
+    if not df_periodo_geral.empty and "vendedor_nome" in df_periodo_geral.columns:
+        for vend_nome, grp_v in df_periodo_geral.groupby("vendedor_nome"):
+            if not vend_nome or vend_nome in ("", "NAN", "NONE", "DESCONHECIDO"):
+                continue
+            if vendedores_ativos_set and vend_nome not in vendedores_ativos_set:
+                continue
+            rp_vend = _calcular_resumo_prazo_df(grp_v)
+            if not rp_vend["tem_prazo"]:
+                continue
+            comparativo_prazo_vendedores.append(
+                {
+                    "Vendedor": vend_nome,
+                    "Prazo_Medio_Dias": rp_vend["prazo_medio_valor"],
+                    "Prazo_Simples_Dias": rp_vend["prazo_medio_simples"],
+                    "Qtd_NFs": rp_vend["qtd_notas_com_prazo"],
+                    "Total_Vendas": float(grp_v["valor_total"].sum()),
+                }
+            )
+    comparativo_prazo_vendedores.sort(key=lambda x: x["Prazo_Medio_Dias"], reverse=True)
 
     # Comparativo MoM e YoY
     vendas_mom = float(
@@ -409,6 +604,13 @@ def gerar_metricas_e_graficos(
         "margem_bruta_pct": dados_margem["margem_pct"],
         "custo_total_mes": dados_margem.get("custo_total", "R$ 0,00"),
         "tem_margem": dados_margem["tem_dados"],
+        "tem_prazo": resumo_prazo_visao["tem_prazo"],
+        "prazo_medio_dias": resumo_prazo_visao["prazo_medio_dias"],
+        "prazo_medio_valor": resumo_prazo_visao["prazo_medio_valor"],
+        "prazo_medio_simples_dias": resumo_prazo_visao["prazo_medio_simples_dias"],
+        "qtd_notas_com_prazo": resumo_prazo_visao["qtd_notas_com_prazo"],
+        "grafico_prazo_vendedores": "",
+        "comparativo_prazo_vendedores": comparativo_prazo_vendedores,
     }
 
     # Tabela de Notas Fiscais do Período
@@ -417,12 +619,70 @@ def gerar_metricas_e_graficos(
         df_nf_tab = df_filtered.sort_values(["data_emissao", "numero_nota"], ascending=[False, False]).copy()
         df_nf_tab["data_str"] = df_nf_tab["data_emissao"].dt.strftime("%d/%m/%Y")
         df_nf_tab["data_iso"] = df_nf_tab["data_emissao"].dt.strftime("%Y-%m-%d")
+        df_nf_tab["prazo_dias_order"] = df_nf_tab["prazo_dias"].fillna(-1.0)
         tabela_notas = df_nf_tab[
-            ["numero_nota", "cliente_nome", "vendedor_nome", "data_str", "data_iso", "valor_total"]
+            [
+                "numero_nota",
+                "cliente_nome",
+                "vendedor_nome",
+                "data_str",
+                "data_iso",
+                "valor_total",
+                "prazo_label",
+                "prazo_dias_order",
+            ]
         ].to_dict(orient="records")
 
     if not gerar_graficos:
         return metricas, "", "", "", "", "", tabela_notas
+
+    # Gráfico Comparativo de Prazo Médio entre Vendedores Ativos (para Admin / Supervisor)
+    if comparativo_prazo_vendedores:
+        df_prazo_vend = pd.DataFrame(comparativo_prazo_vendedores)
+        resumo_empresa_prazo = _calcular_resumo_prazo_df(df_periodo_geral)
+        media_emp_dias = resumo_empresa_prazo["prazo_medio_valor"]
+
+        fig_prazo = px.bar(
+            df_prazo_vend,
+            x="Vendedor",
+            y="Prazo_Medio_Dias",
+            text="Prazo_Medio_Dias",
+            color="Prazo_Medio_Dias",
+            color_continuous_scale="Tealgrn",
+            title=f"⏱️ Comparativo de Prazo Médio Praticado por Vendedor Ativo ({mes_selecionado:02d}/{ano_selecionado})",
+            labels={
+                "Prazo_Medio_Dias": "Prazo Médio Ponderado (dias)",
+                "Vendedor": "Vendedor Ativo",
+                "Qtd_NFs": "Qtd NFs",
+            },
+            hover_data={
+                "Prazo_Medio_Dias": ":.1f",
+                "Prazo_Simples_Dias": ":.1f",
+                "Qtd_NFs": True,
+            },
+        )
+        fig_prazo.update_traces(texttemplate="%{text:.1f}d", textposition="outside")
+        if media_emp_dias > 0:
+            fig_prazo.add_hline(
+                y=media_emp_dias,
+                line_dash="dash",
+                line_color="#dc2626",
+                annotation_text=f"Média Empresa ({media_emp_dias:.1f} dias)",
+                annotation_position="top right",
+            )
+        max_y_prazo = float(df_prazo_vend["Prazo_Medio_Dias"].max()) if not df_prazo_vend.empty else 30.0
+        fig_prazo.update_layout(
+            height=360,
+            margin=dict(t=50, b=60, l=25, r=20),
+            coloraxis_showscale=False,
+            yaxis=dict(
+                title="Prazo Médio (dias)",
+                ticksuffix=" d",
+                range=[0, max(max_y_prazo * 1.22, 35.0)],
+            ),
+            xaxis_title="Vendedor Ativo",
+        )
+        metricas["grafico_prazo_vendedores"] = fig_to_html(fig_prazo)
 
     # Gráfico 1: Evolução Diária Acumulada vs Rampa Ideal da Meta
     grafico_evolucao_html = ""
@@ -1530,10 +1790,28 @@ def gerar_dashboard_financeiro(
             }
         )
 
-    # Consolida tabela de Conciliação por Portador
+    # Consolida Conciliação por Portador / Forma de Pagamento
     resumo_portadores = []
+    soma_rec_port = sum(p["entradas_recebidas"] for p in conciliacao_portador_map.values())
+    soma_pag_port = sum(p["saidas_pagas"] for p in conciliacao_portador_map.values())
+
     for p_data in conciliacao_portador_map.values():
         p_data["saldo_liquido_conciliado"] = p_data["entradas_recebidas"] - p_data["saidas_pagas"]
+        if regime_limpo == "CAIXA":
+            p_data["valor_entrada_ref"] = (
+                p_data["entradas_recebidas"]
+                if soma_rec_port > 0
+                else (p_data["entradas_recebidas"] + p_data["entradas_a_receber"])
+            )
+            p_data["valor_saida_ref"] = (
+                p_data["saidas_pagas"]
+                if soma_pag_port > 0
+                else (p_data["saidas_pagas"] + p_data["saidas_a_pagar"])
+            )
+        else:
+            p_data["valor_entrada_ref"] = p_data["entradas_recebidas"] + p_data["entradas_a_receber"]
+            p_data["valor_saida_ref"] = p_data["saidas_pagas"] + p_data["saidas_a_pagar"]
+
         if (
             p_data["entradas_recebidas"] > 0
             or p_data["saidas_pagas"] > 0
@@ -1541,6 +1819,13 @@ def gerar_dashboard_financeiro(
             or p_data["saidas_a_pagar"] > 0
         ):
             resumo_portadores.append(p_data)
+
+    total_entradas_port = sum(p["valor_entrada_ref"] for p in resumo_portadores) or 1.0
+    total_saidas_port = sum(p["valor_saida_ref"] for p in resumo_portadores) or 1.0
+    for p_data in resumo_portadores:
+        p_data["pct_entradas"] = round(p_data["valor_entrada_ref"] / total_entradas_port * 100.0, 2)
+        p_data["pct_saidas"] = round(p_data["valor_saida_ref"] / total_saidas_port * 100.0, 2)
+
     resumo_portadores.sort(
         key=lambda x: (x["entradas_recebidas"] + x["saidas_pagas"] + x["entradas_a_receber"] + x["saidas_a_pagar"]),
         reverse=True,
@@ -1585,6 +1870,8 @@ def gerar_dashboard_financeiro(
         "lucro_liquido_raw": lucro_liquido_final,
         "lucro_liquido_positivo": lucro_liquido_final >= 0,
         "margem_liquida_pct": f"{margem_liquida_pct:.1f}%",
+        "grafico_pizza_entradas": "",
+        "grafico_pizza_saidas": "",
     }
 
     kpis = {
@@ -1609,33 +1896,101 @@ def gerar_dashboard_financeiro(
 
     grafico_dre_html = ""
     if gerar_graficos:
-        df_dre_chart = pd.DataFrame(
-            [
-                {"Categoria": "Entradas / Receitas", "Valor": receita_base_dre, "Cor": "#15803d"},
-                {"Categoria": "Fornecedores (Mercadoria)", "Valor": custo_mercadoria, "Cor": "#dc2626"},
-                {"Categoria": "Impostos & Taxas", "Valor": impostos_taxas, "Cor": "#ea580c"},
-                {"Categoria": "Vendas & Folha", "Valor": despesas_vendas, "Cor": "#d97706"},
-                {"Categoria": "Adm. & Operacional", "Valor": despesas_adm, "Cor": "#64748b"},
-                {"Categoria": "Sócios / Diretoria", "Valor": socios_diretoria, "Cor": "#475569"},
-                {
-                    "Categoria": "Lucro Líquido",
-                    "Valor": lucro_liquido_final,
-                    "Cor": "#0284c7" if lucro_liquido_final >= 0 else "#b91c1c",
-                },
-            ]
+        # 1. Gráfico de Cascatas (Waterfall) da Composição do Resultado & Lucro Líquido
+        fig_dre = go.Figure(
+            go.Waterfall(
+                name="Resultado",
+                orientation="v",
+                measure=["absolute", "relative", "relative", "relative", "relative", "relative", "total"],
+                x=[
+                    "Entradas / Receitas",
+                    "Fornecedores (Mercadoria)",
+                    "Impostos & Taxas",
+                    "Vendas & Folha",
+                    "Adm. & Operacional",
+                    "Sócios / Diretoria",
+                    "Lucro Líquido",
+                ],
+                textposition="outside",
+                text=[
+                    f"R$ {receita_base_dre:,.0f}",
+                    f"-R$ {custo_mercadoria:,.0f}" if custo_mercadoria > 0 else "R$ 0",
+                    f"-R$ {impostos_taxas:,.0f}" if impostos_taxas > 0 else "R$ 0",
+                    f"-R$ {despesas_vendas:,.0f}" if despesas_vendas > 0 else "R$ 0",
+                    f"-R$ {despesas_adm:,.0f}" if despesas_adm > 0 else "R$ 0",
+                    f"-R$ {socios_diretoria:,.0f}" if socios_diretoria > 0 else "R$ 0",
+                    f"R$ {lucro_liquido_final:,.0f}",
+                ],
+                y=[
+                    receita_base_dre,
+                    -custo_mercadoria,
+                    -impostos_taxas,
+                    -despesas_vendas,
+                    -despesas_adm,
+                    -socios_diretoria,
+                    lucro_liquido_final,
+                ],
+                connector={"line": {"color": "#64748b", "width": 1.5, "dash": "dot"}},
+                increasing={"marker": {"color": "#15803d"}},
+                decreasing={"marker": {"color": "#dc2626"}},
+                totals={"marker": {"color": "#0284c7" if lucro_liquido_final >= 0 else "#b91c1c"}},
+            )
         )
-        fig_dre = px.bar(
-            df_dre_chart,
-            x="Categoria",
-            y="Valor",
-            color="Cor",
-            color_discrete_map="identity",
-            text_auto=".2s",
+        fig_dre.update_layout(
             title=f"💰 Composição do Resultado & Lucro Líquido ({mes_selecionado:02d}/{ano_selecionado} - {regime_limpo})",
-            labels={"Valor": "Valor (R$)", "Categoria": ""},
+            showlegend=False,
+            height=360,
+            margin=dict(t=50, b=30, l=25, r=20),
+            yaxis_title="Valor (R$)",
         )
-        fig_dre.update_layout(showlegend=False, height=350, margin=dict(t=45, b=25, l=20, r=20))
         grafico_dre_html = fig_to_html(fig_dre)
+
+        # 2. Dois Gráficos de Pizza: % de Entradas e % de Saídas por Portador / Forma de Pagamento
+        dados_in_port = [p for p in resumo_portadores if p["valor_entrada_ref"] > 0]
+        if dados_in_port:
+            df_pie_in = pd.DataFrame(dados_in_port)
+            fig_pie_in = px.pie(
+                df_pie_in,
+                names="portador",
+                values="valor_entrada_ref",
+                hole=0.38,
+                title="🟢 % de Entradas por Portador / Forma de Pagamento",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig_pie_in.update_traces(
+                textposition="inside",
+                textinfo="percent+label",
+                hovertemplate="<b>%{label}</b><br>Valor: R$ %{value:,.2f}<br>Participação: %{percent}<extra></extra>",
+            )
+            fig_pie_in.update_layout(
+                height=340,
+                margin=dict(t=45, b=20, l=15, r=15),
+                legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5),
+            )
+            dre["grafico_pizza_entradas"] = fig_to_html(fig_pie_in)
+
+        dados_out_port = [p for p in resumo_portadores if p["valor_saida_ref"] > 0]
+        if dados_out_port:
+            df_pie_out = pd.DataFrame(dados_out_port)
+            fig_pie_out = px.pie(
+                df_pie_out,
+                names="portador",
+                values="valor_saida_ref",
+                hole=0.38,
+                title="🔴 % de Saídas por Portador / Forma de Pagamento",
+                color_discrete_sequence=px.colors.qualitative.Pastel1,
+            )
+            fig_pie_out.update_traces(
+                textposition="inside",
+                textinfo="percent+label",
+                hovertemplate="<b>%{label}</b><br>Valor: R$ %{value:,.2f}<br>Participação: %{percent}<extra></extra>",
+            )
+            fig_pie_out.update_layout(
+                height=340,
+                margin=dict(t=45, b=20, l=15, r=15),
+                legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5),
+            )
+            dre["grafico_pizza_saidas"] = fig_to_html(fig_pie_out)
 
     tabela_cr.sort(key=lambda r: (r["data_rec_iso"] or r["data_venc_iso"], r["documento"]), reverse=True)
     tabela_cp.sort(key=lambda r: (r["data_pag_iso"] or r["data_venc_iso"], r["documento"]), reverse=True)

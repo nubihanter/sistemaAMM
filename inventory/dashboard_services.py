@@ -240,6 +240,11 @@ def gerar_analise_estoque_e_compras(
             "tabela_parados": [],
             "tabela_cliente_produtos": [],
             "resumo_cliente": {},
+            "tabela_fornecedores_comprados": [],
+            "tabela_fornecedores_vendas": [],
+            "fornecedores_em_ascensao": [],
+            "fornecedores_em_queda": [],
+            "resumo_fornecedores": {},
             "marcas_disponiveis": [],
             "clientes_disponiveis": [],
         }
@@ -820,6 +825,465 @@ def gerar_analise_estoque_e_compras(
                 "vendedor": df_cli_merged["Vendedor_Cliente"].iloc[0] if not df_cli_merged.empty else "-",
             }
 
+    # 11. Análise de Fornecedores & Marcas (Base de Giro)
+    tabela_fornecedores_comprados = []
+    tabela_fornecedores_vendas = []
+    fornecedores_em_ascensao = []
+    fornecedores_em_queda = []
+    resumo_fornecedores = {
+        "total_fornecedores_comprados": 0,
+        "valor_total_comprado_periodo": "R$ 0,00",
+        "total_marcas_ativas": 0,
+        "qtd_em_ascensao": 0,
+        "qtd_em_queda": 0,
+    }
+
+    # 11.1 Ranking dos Fornecedores Mais Comprados (Base de Giro via Contas a Pagar - Compra de Mercadoria)
+    from django.db.models import Q
+    from sales.models import ContaPagar
+
+    cp_compras_qs = (
+        ContaPagar.objects.filter(cancelada=False, data_emissao__gte=data_corte)
+        .exclude(status="CANCELADO")
+        .filter(
+            Q(centro_custo__iexact="COMPRAS/ESTOQUE")
+            | Q(grupo_conta__icontains="COMPRA MERCADORIA")
+            | Q(subconta__icontains="COMPRA MERCADORIA")
+            | Q(grupo_conta__icontains="MATERIA PRIMA")
+            | Q(subconta__icontains="MATERIA PRIMA")
+        )
+        .values(
+            "id_titulo_erp",
+            "numero_documento",
+            "fornecedor_nome",
+            "fornecedor_documento",
+            "data_emissao",
+            "prazo_dias",
+            "valor_total",
+        )
+    )
+    df_cp_forn = pd.DataFrame(list(cp_compras_qs))
+    if not df_cp_forn.empty:
+        df_cp_forn["valor_total"] = pd.to_numeric(df_cp_forn["valor_total"], errors="coerce").fillna(0.0)
+        df_cp_forn["prazo_dias"] = pd.to_numeric(df_cp_forn["prazo_dias"], errors="coerce").fillna(0).clip(lower=0)
+        df_cp_forn["fornecedor_nome"] = (
+            df_cp_forn["fornecedor_nome"]
+            .fillna("FORNECEDOR NÃO IDENTIFICADO")
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .replace({"": "FORNECEDOR NÃO IDENTIFICADO", "NAN": "FORNECEDOR NÃO IDENTIFICADO"})
+        )
+        df_cp_forn["doc_ref"] = np.where(
+            df_cp_forn["numero_documento"].fillna("").astype(str).str.strip() != "",
+            df_cp_forn["numero_documento"].astype(str).str.strip(),
+            df_cp_forn["id_titulo_erp"].astype(str).str.strip(),
+        )
+        df_forn_comp = (
+            df_cp_forn.groupby("fornecedor_nome", as_index=False)
+            .agg(
+                Valor_Comprado=("valor_total", "sum"),
+                Qtd_Notas=("doc_ref", "nunique"),
+                Qtd_Titulos=("id_titulo_erp", "count"),
+                Prazo_Medio_Dias=("prazo_dias", "mean"),
+                Ultima_Compra=("data_emissao", "max"),
+            )
+            .sort_values(["Valor_Comprado", "Qtd_Notas"], ascending=[False, False])
+            .reset_index(drop=True)
+        )
+        tot_compras_periodo = float(df_forn_comp["Valor_Comprado"].sum())
+        df_forn_comp["Fornecedor"] = df_forn_comp["fornecedor_nome"]
+        df_forn_comp["Valor_Total_Comprado"] = df_forn_comp["Valor_Comprado"]
+        df_forn_comp["Media_Mensal_Compra"] = df_forn_comp["Valor_Comprado"] / meses_periodo
+        df_forn_comp["Media_Mensal_Qtd"] = df_forn_comp["Qtd_Titulos"] / meses_periodo
+        df_forn_comp["Pct_Compras"] = (
+            (df_forn_comp["Valor_Comprado"] / tot_compras_periodo * 100.0) if tot_compras_periodo > 0 else 0.0
+        )
+        df_forn_comp["Ultima_Compra_Str"] = df_forn_comp["Ultima_Compra"].apply(
+            lambda d: d.strftime("%d/%m/%Y") if d and not pd.isna(d) else "-"
+        )
+        df_forn_comp["Posicao_Valor"] = range(1, len(df_forn_comp) + 1)
+        df_forn_comp["Posicao"] = df_forn_comp["Posicao_Valor"]
+        df_forn_comp_qtd = df_forn_comp.sort_values(["Qtd_Notas", "Valor_Comprado"], ascending=[False, False]).copy()
+        df_forn_comp_qtd["Posicao_Qtd"] = range(1, len(df_forn_comp_qtd) + 1)
+        mapa_pos_qtd = dict(zip(df_forn_comp_qtd["fornecedor_nome"], df_forn_comp_qtd["Posicao_Qtd"]))
+        df_forn_comp["Posicao_Qtd"] = df_forn_comp["fornecedor_nome"].map(mapa_pos_qtd)
+
+        tabela_fornecedores_comprados = df_forn_comp.to_dict(orient="records")
+        resumo_fornecedores["total_fornecedores_comprados"] = len(df_forn_comp)
+        resumo_fornecedores["valor_total_comprado_periodo"] = f"R$ {tot_compras_periodo:,.2f}"
+        resumo_fornecedores["valor_total_comprado"] = f"R$ {tot_compras_periodo:,.2f}"
+
+    # 11.2 Ranking dos Fornecedores / Marcas que Mais Vendem, Tendência (Ascensão/Queda) e Consumo Médio Mensal por Marca
+    df_marcas_base = df_base[df_base["marca"].astype(str).str.upper() != "N/A"].copy()
+    if df_marcas_base.empty:
+        df_marcas_base = df_base.copy()
+
+    if not df_marcas_base.empty:
+        df_marcas_base["Estoque_Positivo"] = df_marcas_base["estoque_atual"].clip(lower=0)
+        df_marcas_base["Custo_Giro_SKU"] = df_marcas_base["Qtd_Vendida"] * df_marcas_base["Custo_Ref"]
+        df_marcas_base["Tem_Giro"] = (df_marcas_base["Qtd_Vendida"] > 0).astype(int)
+
+        df_marca_agg = (
+            df_marcas_base.groupby("marca", as_index=False)
+            .agg(
+                Total_SKUs=("codigo_produto", "count"),
+                SKUs_Com_Giro=("Tem_Giro", "sum"),
+                Qtd_Vendida=("Qtd_Vendida", "sum"),
+                Faturamento_Periodo=("Faturamento_Periodo", "sum"),
+                Custo_Giro_Periodo=("Custo_Giro_SKU", "sum"),
+                Estoque_Atual=("Estoque_Positivo", "sum"),
+                Qtd_Ordem_Compra=("qtd_ordem_compra", "sum"),
+                Qtd_Sugerida_Compra=("Qtd_Sugerida_Compra", "sum"),
+                Valor_Compra_Estimado=("Valor_Compra_Estimado", "sum"),
+                Valor_Estoque_Custo=("Valor_Estoque_Custo", "sum"),
+            )
+        )
+
+        # Pedidos e Clientes distintos por Marca no período + Tendência Mensal por Marca
+        if not df_vendas.empty:
+            df_v_marca = df_vendas.copy()
+            mapa_sku_marca = dict(zip(df_base["codigo_produto"], df_base["marca"]))
+            df_v_marca["marca_consolidada"] = (
+                df_v_marca["codigo_produto"]
+                .map(mapa_sku_marca)
+                .fillna(df_v_marca["marca"])
+                .fillna("N/A")
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .replace({"": "N/A", "NAN": "N/A", "NONE": "N/A"})
+            )
+            df_v_ped_cli = (
+                df_v_marca.groupby("marca_consolidada", as_index=False)
+                .agg(
+                    Num_Pedidos=("numero_nota", "nunique"),
+                    Num_Clientes=("cliente_nome", "nunique"),
+                )
+                .rename(columns={"marca_consolidada": "marca"})
+            )
+            df_marca_agg = pd.merge(df_marca_agg, df_v_ped_cli, on="marca", how="left")
+
+            piv_marca_qtd = (
+                df_v_marca.pivot_table(
+                    index="marca_consolidada",
+                    columns="fatia_mes",
+                    values="quantidade",
+                    aggfunc="sum",
+                    fill_value=0.0,
+                )
+                * fator_mensalizacao
+            )
+            piv_marca_fat = (
+                df_v_marca.pivot_table(
+                    index="marca_consolidada",
+                    columns="fatia_mes",
+                    values="valor_total",
+                    aggfunc="sum",
+                    fill_value=0.0,
+                )
+                * fator_mensalizacao
+            )
+            for m_i in range(1, num_meses_janela + 1):
+                if m_i not in piv_marca_qtd.columns:
+                    piv_marca_qtd[m_i] = 0.0
+                if m_i not in piv_marca_fat.columns:
+                    piv_marca_fat[m_i] = 0.0
+            cols_janela = list(range(1, num_meses_janela + 1))
+            piv_marca_qtd = piv_marca_qtd[cols_janela]
+            piv_marca_fat = piv_marca_fat[cols_janela]
+
+            pesos_t = (t_vals - t_medio) / t_var_sum
+            slopes_marca_qtd = piv_marca_qtd.values.dot(pesos_t)
+            slopes_marca_fat = piv_marca_fat.values.dot(pesos_t)
+
+            # Comparação da metade recente vs metade inicial da janela para % de evolução
+            meio_idx = max(1, num_meses_janela // 2)
+            media_ini_qtd = piv_marca_qtd[cols_janela[:meio_idx]].mean(axis=1).values
+            media_fim_qtd = piv_marca_qtd[cols_janela[meio_idx:]].mean(axis=1).values
+            var_pct_marca = np.where(
+                media_ini_qtd > 0,
+                ((media_fim_qtd - media_ini_qtd) / media_ini_qtd) * 100.0,
+                np.where(media_fim_qtd > 0, 100.0, 0.0),
+            )
+
+            hist_marca_strs = []
+            for row_vals in piv_marca_qtd.values:
+                partes = [f"M{i+1}: {val:.0f}" for i, val in enumerate(row_vals)]
+                hist_marca_strs.append(" | ".join(partes))
+
+            df_tend_marca = pd.DataFrame(
+                {
+                    "marca": piv_marca_qtd.index,
+                    "Tendencia_Mes_Qtd": np.round(slopes_marca_qtd, 1),
+                    "Tendencia_Mes_Fat": np.round(slopes_marca_fat, 2),
+                    "Variacao_Pct": np.round(var_pct_marca, 1),
+                    "Historico_Mensal_Str": hist_marca_strs,
+                    "Media_Recente_Qtd": np.round(media_fim_qtd, 1),
+                    "Media_Inicial_Qtd": np.round(media_ini_qtd, 1),
+                }
+            )
+            df_marca_agg = pd.merge(df_marca_agg, df_tend_marca, on="marca", how="left")
+        else:
+            df_marca_agg["Num_Pedidos"] = 0
+            df_marca_agg["Num_Clientes"] = 0
+            df_marca_agg["Tendencia_Mes_Qtd"] = 0.0
+            df_marca_agg["Tendencia_Mes_Fat"] = 0.0
+            df_marca_agg["Variacao_Pct"] = 0.0
+            df_marca_agg["Historico_Mensal_Str"] = "Sem vendas no período"
+            df_marca_agg["Media_Recente_Qtd"] = 0.0
+            df_marca_agg["Media_Inicial_Qtd"] = 0.0
+
+        for c_int in ["Num_Pedidos", "Num_Clientes"]:
+            df_marca_agg[c_int] = pd.to_numeric(df_marca_agg[c_int], errors="coerce").fillna(0).astype(int)
+        for c_flt in ["Tendencia_Mes_Qtd", "Tendencia_Mes_Fat", "Variacao_Pct", "Media_Recente_Qtd", "Media_Inicial_Qtd"]:
+            df_marca_agg[c_flt] = pd.to_numeric(df_marca_agg[c_flt], errors="coerce").fillna(0.0).astype(float)
+        df_marca_agg["Historico_Mensal_Str"] = df_marca_agg["Historico_Mensal_Str"].fillna("Sem vendas no período")
+
+        # Consumo médio mensal por marca (venda em unidades/mês e R$/mês)
+        df_marca_agg["Fornecedor"] = df_marca_agg["marca"]
+        df_marca_agg["SKUs_Ativos"] = df_marca_agg["Total_SKUs"]
+        df_marca_agg["Consumo_Medio_Mensal_Qtd"] = np.round(df_marca_agg["Qtd_Vendida"] / meses_periodo, 1)
+        df_marca_agg["Consumo_Medio_Mensal_Fat"] = np.round(df_marca_agg["Faturamento_Periodo"] / meses_periodo, 2)
+
+        tot_qtd_marcas = float(df_marca_agg["Qtd_Vendida"].sum())
+        tot_fat_marcas = float(df_marca_agg["Faturamento_Periodo"].sum())
+        df_marca_agg["Pct_Qtd"] = (
+            (df_marca_agg["Qtd_Vendida"] / tot_qtd_marcas * 100.0) if tot_qtd_marcas > 0 else 0.0
+        )
+        df_marca_agg["Pct_Faturamento"] = (
+            (df_marca_agg["Faturamento_Periodo"] / tot_fat_marcas * 100.0) if tot_fat_marcas > 0 else 0.0
+        )
+        df_marca_agg["Cobertura_Meses"] = np.where(
+            df_marca_agg["Consumo_Medio_Mensal_Qtd"] > 0,
+            np.round(df_marca_agg["Estoque_Atual"] / df_marca_agg["Consumo_Medio_Mensal_Qtd"], 1),
+            np.where(df_marca_agg["Estoque_Atual"] > 0, 99.0, 0.0),
+        )
+
+        # Classificação de Tendência (Em Ascensão / Em Queda / Estável)
+        df_marca_agg["Status_Tendencia"] = np.select(
+            [
+                df_marca_agg["Qtd_Vendida"] <= 0,
+                (df_marca_agg["Tendencia_Mes_Qtd"] >= 1.0)
+                | ((df_marca_agg["Tendencia_Mes_Qtd"] > 0.1) & (df_marca_agg["Variacao_Pct"] >= 10.0)),
+                (df_marca_agg["Tendencia_Mes_Qtd"] <= -1.0)
+                | ((df_marca_agg["Tendencia_Mes_Qtd"] < -0.1) & (df_marca_agg["Variacao_Pct"] <= -10.0)),
+            ],
+            ["SEM GIRO", "EM ASCENSÃO", "EM QUEDA"],
+            default="ESTÁVEL",
+        )
+        df_marca_agg["Badge_Tendencia"] = np.select(
+            [
+                df_marca_agg["Status_Tendencia"] == "EM ASCENSÃO",
+                df_marca_agg["Status_Tendencia"] == "EM QUEDA",
+                df_marca_agg["Status_Tendencia"] == "ESTÁVEL",
+            ],
+            [
+                "bg-success-subtle text-success border",
+                "bg-danger-subtle text-danger border",
+                "bg-secondary-subtle text-secondary border",
+            ],
+            default="bg-light text-muted border",
+        )
+
+        # Posições no Ranking de Vendas por Faturamento e por Quantidade
+        df_marca_agg = df_marca_agg.sort_values(["Qtd_Vendida", "Faturamento_Periodo"], ascending=[False, False]).reset_index(drop=True)
+        df_marca_agg["Posicao_Qtd"] = range(1, len(df_marca_agg) + 1)
+        df_marca_agg = df_marca_agg.sort_values(["Faturamento_Periodo", "Qtd_Vendida"], ascending=[False, False]).reset_index(drop=True)
+        df_marca_agg["Posicao_Fat"] = range(1, len(df_marca_agg) + 1)
+
+        tabela_fornecedores_vendas = df_marca_agg.to_dict(orient="records")
+
+        df_asc = (
+            df_marca_agg[df_marca_agg["Status_Tendencia"] == "EM ASCENSÃO"]
+            .sort_values(["Tendencia_Mes_Qtd", "Variacao_Pct"], ascending=[False, False])
+            .copy()
+        )
+        df_queda = (
+            df_marca_agg[df_marca_agg["Status_Tendencia"] == "EM QUEDA"]
+            .sort_values(["Tendencia_Mes_Qtd", "Variacao_Pct"], ascending=[True, True])
+            .copy()
+        )
+        fornecedores_em_ascensao = df_asc.to_dict(orient="records")
+        fornecedores_em_queda = df_queda.to_dict(orient="records")
+
+        resumo_fornecedores["total_marcas_ativas"] = int((df_marca_agg["Qtd_Vendida"] > 0).sum())
+        resumo_fornecedores["qtd_em_ascensao"] = len(df_asc)
+        resumo_fornecedores["qtd_ascensao"] = len(df_asc)
+        resumo_fornecedores["qtd_em_queda"] = len(df_queda)
+        resumo_fornecedores["qtd_queda"] = len(df_queda)
+
+        # Fallback: se Contas a Pagar estiver vazia no período, popula tabela_fornecedores_comprados via Marcas (Custo de Giro + OC)
+        if not tabela_fornecedores_comprados:
+            df_fb_comp = df_marca_agg.copy()
+            df_fb_comp["Valor_Comprado"] = df_fb_comp["Custo_Giro_Periodo"] + df_fb_comp["Valor_Compra_Estimado"]
+            df_fb_comp = df_fb_comp[df_fb_comp["Valor_Comprado"] > 0].sort_values("Valor_Comprado", ascending=False).reset_index(drop=True)
+            if not df_fb_comp.empty:
+                tot_fb = float(df_fb_comp["Valor_Comprado"].sum())
+                df_fb_comp["fornecedor_nome"] = df_fb_comp["marca"]
+                df_fb_comp["Fornecedor"] = df_fb_comp["marca"]
+                df_fb_comp["Valor_Total_Comprado"] = df_fb_comp["Valor_Comprado"]
+                df_fb_comp["Media_Mensal_Compra"] = df_fb_comp["Valor_Comprado"] / meses_periodo
+                df_fb_comp["Media_Mensal_Qtd"] = df_fb_comp["Total_SKUs"] / meses_periodo
+                df_fb_comp["Pct_Compras"] = (df_fb_comp["Valor_Comprado"] / tot_fb * 100.0) if tot_fb > 0 else 0.0
+                df_fb_comp["Qtd_Notas"] = df_fb_comp["SKUs_Com_Giro"]
+                df_fb_comp["Qtd_Titulos"] = df_fb_comp["Total_SKUs"]
+                df_fb_comp["Prazo_Medio_Dias"] = 0.0
+                df_fb_comp["Ultima_Compra_Str"] = "-"
+                df_fb_comp["Posicao_Valor"] = range(1, len(df_fb_comp) + 1)
+                df_fb_comp["Posicao"] = df_fb_comp["Posicao_Valor"]
+                df_fb_comp["Posicao_Qtd"] = range(1, len(df_fb_comp) + 1)
+                tabela_fornecedores_comprados = df_fb_comp.to_dict(orient="records")
+                resumo_fornecedores["total_fornecedores_comprados"] = len(df_fb_comp)
+                resumo_fornecedores["valor_total_comprado_periodo"] = f"R$ {tot_fb:,.2f}"
+                resumo_fornecedores["valor_total_comprado"] = f"R$ {tot_fb:,.2f}"
+
+    if gerar_graficos:
+        # Gráfico 1: Ranking dos Fornecedores Mais Comprados (Base de Giro)
+        if tabela_fornecedores_comprados:
+            df_top_forn_comp = pd.DataFrame(tabela_fornecedores_comprados).head(15).copy()
+            df_top_forn_comp["Fornecedor_Curto"] = df_top_forn_comp["fornecedor_nome"].astype(str).str.slice(0, 32)
+            fig_forn_comp = px.bar(
+                df_top_forn_comp,
+                x="Valor_Comprado",
+                y="Fornecedor_Curto",
+                orientation="h",
+                text_auto=".2s",
+                title=f"🏭 Top 15 Fornecedores Mais Comprados em R$ ({dias_analise}d)",
+                labels={"Valor_Comprado": "Volume Comprado (R$)", "Fornecedor_Curto": "Fornecedor"},
+            )
+            fig_forn_comp.update_traces(marker_color="#1e3a8a")
+            fig_forn_comp.update_layout(
+                height=420,
+                margin=dict(t=45, b=20, l=20, r=20),
+                yaxis=dict(categoryorder="total ascending"),
+            )
+            graficos["fornecedores_mais_comprados"] = fig_to_html(fig_forn_comp)
+
+            df_top_forn_qtd = (
+                pd.DataFrame(tabela_fornecedores_comprados)
+                .sort_values(["Qtd_Notas", "Valor_Comprado"], ascending=[False, False])
+                .head(15)
+                .copy()
+            )
+            df_top_forn_qtd["Fornecedor_Curto"] = df_top_forn_qtd["fornecedor_nome"].astype(str).str.slice(0, 32)
+            fig_forn_comp_q = px.bar(
+                df_top_forn_qtd,
+                x="Qtd_Notas",
+                y="Fornecedor_Curto",
+                orientation="h",
+                text="Qtd_Notas",
+                title=f"🏭 Top 15 Fornecedores Mais Comprados por Nº de Pedidos/NFs ({dias_analise}d)",
+                labels={"Qtd_Notas": "Nº de NFs / Pedidos de Compra", "Fornecedor_Curto": "Fornecedor"},
+            )
+            fig_forn_comp_q.update_traces(marker_color="#1e3a8a")
+            fig_forn_comp_q.update_layout(
+                height=420,
+                margin=dict(t=45, b=20, l=20, r=20),
+                yaxis=dict(categoryorder="total ascending"),
+            )
+            graficos["fornecedores_mais_comprados_qtd"] = fig_to_html(fig_forn_comp_q)
+
+        # Gráfico 2: Ranking dos Fornecedores / Marcas que Mais Vendem (Base de Giro)
+        if tabela_fornecedores_vendas:
+            df_fv = pd.DataFrame(tabela_fornecedores_vendas)
+            df_fv_vendas = df_fv[df_fv["Qtd_Vendida"] > 0].copy()
+            if not df_fv_vendas.empty:
+                top_fv_fat = df_fv_vendas.sort_values("Faturamento_Periodo", ascending=False).head(15).copy()
+                fig_fv_fat = px.bar(
+                    top_fv_fat,
+                    x="Faturamento_Periodo",
+                    y="marca",
+                    orientation="h",
+                    text_auto=".2s",
+                    title=f"💰 Top 15 Fornecedores / Marcas que Mais Vendem em R$ ({dias_analise}d)",
+                    labels={"Faturamento_Periodo": "Faturamento de Venda (R$)", "marca": "Marca / Fornecedor"},
+                )
+                fig_fv_fat.update_traces(marker_color="#15803d")
+                fig_fv_fat.update_layout(
+                    height=420,
+                    margin=dict(t=45, b=20, l=20, r=20),
+                    yaxis=dict(categoryorder="total ascending"),
+                )
+                graficos["fornecedores_mais_vendem_fat"] = fig_to_html(fig_fv_fat)
+
+                top_fv_qtd = df_fv_vendas.sort_values("Qtd_Vendida", ascending=False).head(15).copy()
+                fig_fv_qtd = px.bar(
+                    top_fv_qtd,
+                    x="Qtd_Vendida",
+                    y="marca",
+                    orientation="h",
+                    text="Qtd_Vendida",
+                    title=f"📦 Top 15 Fornecedores / Marcas que Mais Vendem em Quantidade ({dias_analise}d)",
+                    labels={"Qtd_Vendida": "Quantidade Vendida (un)", "marca": "Marca / Fornecedor"},
+                )
+                fig_fv_qtd.update_traces(marker_color="#0284c7")
+                fig_fv_qtd.update_layout(
+                    height=420,
+                    margin=dict(t=45, b=20, l=20, r=20),
+                    yaxis=dict(categoryorder="total ascending"),
+                )
+                graficos["fornecedores_mais_vendem_qtd"] = fig_to_html(fig_fv_qtd)
+
+                # Gráfico 3: Consumo Médio Mensal por Marca (Venda)
+                top_cons_mes = df_fv_vendas.sort_values("Consumo_Medio_Mensal_Qtd", ascending=False).head(15).copy()
+                fig_cons_marca = px.bar(
+                    top_cons_mes,
+                    x="Consumo_Medio_Mensal_Qtd",
+                    y="marca",
+                    orientation="h",
+                    text="Consumo_Medio_Mensal_Qtd",
+                    title=f"📊 Consumo Médio Mensal por Marca — Venda em un/mês (Base {dias_analise}d)",
+                    labels={"Consumo_Medio_Mensal_Qtd": "Consumo Médio Mensal (un/mês)", "marca": "Marca"},
+                )
+                fig_cons_marca.update_traces(marker_color="#7c3aed")
+                fig_cons_marca.update_layout(
+                    height=420,
+                    margin=dict(t=45, b=20, l=20, r=20),
+                    yaxis=dict(categoryorder="total ascending"),
+                )
+                graficos["consumo_medio_mensal_marca"] = fig_to_html(fig_cons_marca)
+
+                # Gráfico 4: Fornecedores em Ascensão e Caindo
+                df_tend_plot = pd.concat(
+                    [
+                        df_fv_vendas[df_fv_vendas["Tendencia_Mes_Qtd"] > 0]
+                        .sort_values("Tendencia_Mes_Qtd", ascending=False)
+                        .head(8),
+                        df_fv_vendas[df_fv_vendas["Tendencia_Mes_Qtd"] < 0]
+                        .sort_values("Tendencia_Mes_Qtd", ascending=True)
+                        .head(8),
+                    ],
+                    ignore_index=True,
+                ).drop_duplicates(subset=["marca"])
+                if not df_tend_plot.empty:
+                    df_tend_plot["Direcao"] = np.where(
+                        df_tend_plot["Tendencia_Mes_Qtd"] >= 0,
+                        "Em Ascensão (+un/mês)",
+                        "Caindo (-un/mês)",
+                    )
+                    df_tend_plot = df_tend_plot.sort_values("Tendencia_Mes_Qtd", ascending=True)
+                    fig_tend = px.bar(
+                        df_tend_plot,
+                        x="Tendencia_Mes_Qtd",
+                        y="marca",
+                        orientation="h",
+                        color="Direcao",
+                        color_discrete_map={
+                            "Em Ascensão (+un/mês)": "#16a34a",
+                            "Caindo (-un/mês)": "#dc2626",
+                        },
+                        text="Tendencia_Mes_Qtd",
+                        title=f"📈📉 Fornecedores / Marcas em Ascensão vs. Caindo ({dias_analise}d)",
+                        labels={"Tendencia_Mes_Qtd": "Tendência Mensal (un/mês)", "marca": "Marca / Fornecedor"},
+                    )
+                    fig_tend.update_layout(
+                        height=420,
+                        margin=dict(t=45, b=20, l=20, r=20),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    )
+                    graficos["fornecedores_tendencia"] = fig_to_html(fig_tend)
+
     return {
         "kpis": kpis,
         "graficos": graficos,
@@ -829,6 +1293,11 @@ def gerar_analise_estoque_e_compras(
         "tabela_cliente_produtos": tabela_cliente_produtos,
         "resumo_cliente": resumo_cliente,
         "cliente_selecionado": cliente_selecionado,
+        "tabela_fornecedores_comprados": tabela_fornecedores_comprados,
+        "tabela_fornecedores_vendas": tabela_fornecedores_vendas,
+        "fornecedores_em_ascensao": fornecedores_em_ascensao,
+        "fornecedores_em_queda": fornecedores_em_queda,
+        "resumo_fornecedores": resumo_fornecedores,
         "marcas_disponiveis": marcas_disponiveis,
         "clientes_disponiveis": clientes_disponiveis,
     }
