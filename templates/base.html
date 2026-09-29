@@ -98,7 +98,7 @@
                             </a>
                         {% endif %}
                     </li>
-                    {% if request.user.is_admin or request.user.is_supervisor %}
+                    {% if request.user.is_admin %}
                     <li class="nav-item">
                         <a class="nav-link px-3 {% if request.resolver_match.url_name == 'dashboard_financeiro' %}active{% endif %}" href="{% url 'dashboard_financeiro' %}">
                             💰 Financeiro

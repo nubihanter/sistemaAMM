@@ -5,6 +5,7 @@ urlpatterns = [
     path('dashboard/', views.dashboard_vendas, name='dashboard_vendas'),
     path('dashboard/exportar-excel/', views.exportar_vendas_excel_view, name='exportar_vendas_excel'),
     path('orcamentos/', views.dashboard_orcamentos_view, name='dashboard_orcamentos'),
+    path('orcamentos/exportar-excel/', views.exportar_orcamentos_excel_view, name='exportar_orcamentos_excel'),
     path('financeiro/', views.dashboard_financeiro_view, name='dashboard_financeiro'),
     path('clientes/', views.analise_clientes_view, name='analise_clientes'),
     path('clientes/exportar-excel/', views.exportar_clientes_excel_view, name='exportar_clientes_excel'),

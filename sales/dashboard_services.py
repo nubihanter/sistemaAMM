@@ -889,6 +889,39 @@ def gerar_analise_clientes(
     return kpis_carteira, grafico_status_html, grafico_matriz_html, df_tabela
 
 
+MOTIVOS_PERDA_PADRAO_D047 = {
+    "39": "DESACORDO COMERCIAL",
+    "40": "ERRO DE PREENCHIMENTO",
+    "41": "PREÇO DE CONCORRENTE",
+    "42": "ORÇAMENTO DUPLICADO",
+    "43": "DESISTÊNCIA DO CLIENTE",
+    "44": "TESTE DO SISTEMA",
+    "45": "PREÇO",
+    "46": "PRAZO DE ENTREGA",
+    "47": "ESTOQUE",
+    "48": "PRODUTO C/A",
+    "49": "DUPLICADO",
+}
+
+
+def resolver_motivo_perda_padrao(dados_brutos, status_consolidado: str = "") -> str:
+    """
+    Extrai a descrição padronizada do Motivo de Perda (tabela D047 / campo T003_D047_Id do Hardness ERP).
+    """
+    if isinstance(dados_brutos, dict):
+        ja_resolvido = str(dados_brutos.get("motivo_perda_padrao") or "").strip()
+        if ja_resolvido:
+            return ja_resolvido
+        cod = str(dados_brutos.get("T003_D047_Id") or "").strip()
+        if cod and cod in MOTIVOS_PERDA_PADRAO_D047:
+            return MOTIVOS_PERDA_PADRAO_D047[cod]
+        if cod and cod not in ("0", "NONE", "NULL", "NAN"):
+            return f"CÓD. {cod}"
+    if status_consolidado == "PERDIDO":
+        return "NÃO CLASSIFICADO"
+    return "-"
+
+
 def gerar_dashboard_orcamentos(
     mes_selecionado: int,
     ano_selecionado: int,
@@ -902,7 +935,8 @@ def gerar_dashboard_orcamentos(
     - Total de orçamentos no mês (R$ e quantidade)
     - % de orçamentos realizados / ganhos (em R$ e em quantidade)
     - Orçamentos em aberto (pendentes) e perdidos/cancelados (R$, % e quantidade)
-    - Ranking / conversão por vendedor e tabela de orçamentos do período.
+    - Ranking / conversão por vendedor (apenas vendedores ativos) e tabela de orçamentos do período
+      com o campo padronizado de Motivo de Perda (T003_D047_Id) além da Observação.
     """
     qs = Orcamento.objects.filter(
         data_emissao__year=ano_selecionado,
@@ -931,6 +965,7 @@ def gerar_dashboard_orcamentos(
             "pedido_gerado",
             "numero_nota",
             "observacao",
+            "dados_brutos",
         )
     )
 
@@ -991,6 +1026,11 @@ def gerar_dashboard_orcamentos(
         default="PENDENTE",
     )
 
+    df_all["motivo_perda_padrao"] = [
+        resolver_motivo_perda_padrao(db, st)
+        for db, st in zip(df_all["dados_brutos"], df_all["status_consolidado"])
+    ]
+
     # Filtra pela visão selecionada (EMPRESA ou Vendedor específico)
     if vendedora_selecionada and vendedora_selecionada != "EMPRESA":
         df_visao = df_all[df_all["vendedor_nome"] == vendedora_selecionada.strip().upper()].copy()
@@ -1050,9 +1090,29 @@ def gerar_dashboard_orcamentos(
         "lucro_bruto_realizados": f"R$ {lucro_bruto_real:,.2f}",
     }
 
-    # Resumo por Vendedor (conversão financeira em R$ e quantidade)
+    # Filtra vendedores inativos dos gráficos e do ranking de vendedores
+    vendedores_ativos_grafico = {
+        str(v).strip().upper()
+        for v in Vendedor.objects.filter(ativo=True, ativo_ranking=True).values_list("nome_hardness", flat=True)
+        if v
+    }
+    if not vendedores_ativos_grafico:
+        vendedores_ativos_grafico = {
+            str(v).strip().upper()
+            for v in Vendedor.objects.filter(ativo=True).values_list("nome_hardness", flat=True)
+            if v
+        }
+
+    # Resumo por Vendedor (apenas vendedores ativos quando na visão EMPRESA)
     resumo_vendedores = []
     for vend, grp in df_visao.groupby("vendedor_nome"):
+        if (
+            vendedora_selecionada == "EMPRESA"
+            and vendedores_ativos_grafico
+            and vend not in vendedores_ativos_grafico
+        ):
+            continue
+
         v_tot = float(grp["valor_total"].sum())
         q_tot = len(grp)
         g_real = grp[grp["status_consolidado"] == "FINALIZADO"]
@@ -1138,7 +1198,7 @@ def gerar_dashboard_orcamentos(
             )
             fig_vend.update_layout(
                 barmode="group",
-                title="🎯 Orçado vs Realizado (R$) e % Conversão por Vendedor",
+                title="🎯 Orçado vs Realizado (R$) e % Conversão por Vendedor Ativo",
                 yaxis_title="Valor (R$)",
                 xaxis_title="Vendedor",
                 height=340,
@@ -1148,7 +1208,7 @@ def gerar_dashboard_orcamentos(
             grafico_vendedores_html = fig_to_html(fig_vend)
 
     # Filtra a tabela detalhada se status_filtro foi escolhido
-    df_tab = df_visao.copy()
+    df_tab = df_visao.drop(columns=["dados_brutos"]).copy()
     if status_filtro and status_filtro in ("FINALIZADO", "PENDENTE", "PERDIDO"):
         df_tab = df_tab[df_tab["status_consolidado"] == status_filtro].copy()
 

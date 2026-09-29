@@ -379,6 +379,11 @@ class FinanceiroAndOrcamentosSyncTests(TestCase):
             password="123",
             role=User.Role.ADMINISTRADOR,
         )
+        supervisor_user = User.objects.create_user(
+            username="sup_comercial",
+            password="123",
+            role=User.Role.SUPERVISOR,
+        )
         vendedor_user = User.objects.create_user(
             username="ALINE",
             password="123",
@@ -386,7 +391,16 @@ class FinanceiroAndOrcamentosSyncTests(TestCase):
             nome_vendedor_erp="ALINE",
         )
 
-        # Cria orçamentos em Set/2026: R$ 3.000 realizado e R$ 1.000 pendente -> 75.0% realizado em R$
+        Vendedor.objects.update_or_create(
+            nome_hardness="ALINE",
+            defaults={"ativo": True, "ativo_ranking": True},
+        )
+        Vendedor.objects.update_or_create(
+            nome_hardness="VEND_INATIVO",
+            defaults={"ativo": False, "ativo_ranking": False},
+        )
+
+        # Cria orçamentos em Set/2026 para ALINE: R$ 3.000 realizado e R$ 1.000 perdido (D047_Id=41) -> 75.0% realizado em R$
         Orcamento.objects.create(
             empresa="AMM EPIS",
             numero_orcamento="ORC-1",
@@ -401,10 +415,24 @@ class FinanceiroAndOrcamentosSyncTests(TestCase):
             empresa="AMM EPIS",
             numero_orcamento="ORC-2",
             data_emissao=date(2026, 9, 12),
-            cliente_nome="CLIENTE ABERTO",
+            cliente_nome="CLIENTE PERDIDO",
             vendedor_nome="ALINE",
             valor_total=Decimal("1000.00"),
             valor_custo=Decimal("600.00"),
+            status="PERDIDO",
+            flag_perdido="S",
+            motivo_perda="Concorrente 15% menor",
+            dados_brutos={"T003_D047_Id": "41"},
+        )
+        # Orçamento de vendedor inativo (não deve entrar no gráfico/ranking de vendedores)
+        Orcamento.objects.create(
+            empresa="AMM EPIS",
+            numero_orcamento="ORC-3",
+            data_emissao=date(2026, 9, 15),
+            cliente_nome="CLIENTE ANTIGO",
+            vendedor_nome="VEND_INATIVO",
+            valor_total=Decimal("500.00"),
+            valor_custo=Decimal("300.00"),
             status="PENDENTE",
         )
 
@@ -440,24 +468,47 @@ class FinanceiroAndOrcamentosSyncTests(TestCase):
             status="PAGO",
         )
 
-        # 1. Testa página de Orçamentos como Vendedor
+        # 1. Testa página de Orçamentos como Vendedor (vê apenas a sua carteira)
         self.client.force_login(vendedor_user)
         resp_orc = self.client.get(reverse("dashboard_orcamentos") + "?mes=9&ano=2026")
         self.assertEqual(resp_orc.status_code, 200)
+        self.assertFalse(resp_orc.context["pode_selecionar"])
         self.assertEqual(resp_orc.context["kpis"]["qtd_total"], 2)
         self.assertEqual(resp_orc.context["kpis"]["pct_realizado_valor"], "75.0%")
+
+        # Confirma motivo de perda padronizado (D047_Id=41 -> PREÇO DE CONCORRENTE)
+        orc_perdido_row = [r for r in resp_orc.context["tabela_orcamentos"] if r["numero_orcamento"] == "ORC-2"][0]
+        self.assertEqual(orc_perdido_row["motivo_perda_padrao"], "PREÇO DE CONCORRENTE")
+        self.assertEqual(orc_perdido_row["motivo_perda"], "Concorrente 15% menor")
 
         # Vendedor não acessa Financeiro (redireciona para dashboard_vendas)
         resp_fin_vend = self.client.get(reverse("dashboard_financeiro"))
         self.assertEqual(resp_fin_vend.status_code, 302)
 
-        # 2. Testa página Financeiro como Administrador
+        # 2. Testa Supervisor: acessa todos os orçamentos (e filtra inativos do gráfico), mas NÃO acessa Financeiro
+        self.client.force_login(supervisor_user)
+        resp_orc_sup = self.client.get(reverse("dashboard_orcamentos") + "?mes=9&ano=2026")
+        self.assertEqual(resp_orc_sup.status_code, 200)
+        self.assertTrue(resp_orc_sup.context["pode_selecionar"])
+        nomes_grafico = [rv["vendedor_nome"] for rv in resp_orc_sup.context["resumo_vendedores"]]
+        self.assertEqual(nomes_grafico, ["ALINE"])
+        self.assertNotIn("VEND_INATIVO", nomes_grafico)
+
+        resp_fin_sup = self.client.get(reverse("dashboard_financeiro"))
+        self.assertEqual(resp_fin_sup.status_code, 302)
+
+        # 3. Testa exportação Excel de Orçamentos e página Financeiro como Administrador
         self.client.force_login(admin_user)
+        resp_excel = self.client.get(reverse("exportar_orcamentos_excel") + "?mes=9&ano=2026")
+        self.assertEqual(resp_excel.status_code, 200)
+        self.assertIn("spreadsheetml", resp_excel["Content-Type"])
+
         resp_fin = self.client.get(reverse("dashboard_financeiro") + "?mes=9&ano=2026&regime=CAIXA")
         self.assertEqual(resp_fin.status_code, 200)
         self.assertEqual(resp_fin.context["dre"]["lucro_liquido_raw"], 1800.0)
         self.assertEqual(len(resp_fin.context["resumo_portadores"]), 1)
         self.assertEqual(resp_fin.context["resumo_portadores"][0]["portador"], "BOLETO SICREDI")
         self.assertEqual(resp_fin.context["resumo_portadores"][0]["saldo_liquido_conciliado"], 1800.0)
+
 
 

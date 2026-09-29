@@ -63,6 +63,10 @@
             </button>
         </form>
         {% endif %}
+        <a href="{% url 'exportar_orcamentos_excel' %}?visao={{ vendedora_selecionada|urlencode }}&empresa={{ empresa_filtro|urlencode }}&status={{ status_filtro|urlencode }}&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
+           class="btn btn-success btn-sm fw-semibold shadow-sm">
+            📥 Exportar Excel (.xlsx)
+        </a>
         <button type="button" onclick="window.print()" class="btn btn-outline-dark btn-sm fw-semibold shadow-sm">
             🖨️ Imprimir / PDF
         </button>
@@ -278,7 +282,8 @@
                     <th>Vendedor</th>
                     <th>Status</th>
                     <th>Pedido / NF</th>
-                    <th>Motivo Perda / Obs.</th>
+                    <th>Motivo Perda (Padrão)</th>
+                    <th>Obs. da Perda / Geral</th>
                     <th class="text-end">Valor Total (R$)</th>
                 </tr>
             </thead>
@@ -311,6 +316,13 @@
                         {% if orc.pedido_gerado %}
                             <div class="text-muted" style="font-size: 0.76rem;">{{ orc.pedido_gerado }}</div>
                         {% elif not orc.numero_nota %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-nowrap">
+                        {% if orc.motivo_perda_padrao and orc.motivo_perda_padrao != '-' %}
+                            <span class="badge bg-danger-subtle text-danger border">{{ orc.motivo_perda_padrao }}</span>
+                        {% else %}
                             <span class="text-muted">-</span>
                         {% endif %}
                     </td>

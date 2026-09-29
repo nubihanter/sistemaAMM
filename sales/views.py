@@ -863,9 +863,7 @@ def dashboard_orcamentos_view(request):
         for v in Orcamento.objects.order_by().values_list("vendedor_nome", flat=True).distinct()
         if v and str(v).strip().upper() not in ("", "NAN", "NONE", "DESCONHECIDO")
     }
-    vendedores_disponiveis = sorted(
-        (nomes_orc & vendedores_ativos) if vendedores_ativos else nomes_orc
-    )
+    vendedores_disponiveis = sorted(v for v in nomes_orc if v in vendedores_ativos)
 
     empresas_disponiveis = sorted(
         e for e in Orcamento.objects.order_by().values_list("empresa", flat=True).distinct() if e
@@ -921,16 +919,171 @@ def dashboard_orcamentos_view(request):
 
 
 @login_required
+def exportar_orcamentos_excel_view(request):
+    """
+    Exporta a planilha de Orçamentos do período em Excel (.xlsx), incluindo o
+    Motivo de Perda Padronizado (D047) e a Observação da Perda / Geral.
+    """
+    from io import BytesIO
+    from django.http import HttpResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    user = request.user
+    if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS") and not user.is_superuser:
+        return redirect("dashboard_estoque")
+
+    hoje = timezone.now().date()
+    try:
+        mes_selecionado = int(request.GET.get("mes", hoje.month))
+        if not 1 <= mes_selecionado <= 12:
+            mes_selecionado = hoje.month
+    except ValueError:
+        mes_selecionado = hoje.month
+
+    try:
+        ano_selecionado = int(request.GET.get("ano", hoje.year))
+    except ValueError:
+        ano_selecionado = hoje.year
+
+    empresa_filtro = request.GET.get("empresa", "TODAS").strip() or "TODAS"
+    status_filtro = request.GET.get("status", "TODOS").strip().upper() or "TODOS"
+
+    if user.is_vendedor:
+        vendedora_selecionada = (user.nome_vendedor_erp or user.first_name or user.username).strip().upper()
+    else:
+        vendedora_selecionada = request.GET.get("visao", "EMPRESA").strip().upper() or "EMPRESA"
+
+    kpis, _, _, resumo_vendedores, tabela_orcamentos = gerar_dashboard_orcamentos(
+        mes_selecionado=mes_selecionado,
+        ano_selecionado=ano_selecionado,
+        vendedora_selecionada=vendedora_selecionada,
+        empresa_filtro=empresa_filtro,
+        status_filtro=status_filtro,
+        gerar_graficos=False,
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Orçamentos do Mês"
+
+    header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    thin_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+
+    colunas = [
+        "Nº Orçamento",
+        "Empresa",
+        "Data Emissão",
+        "Cliente",
+        "Cidade / UF",
+        "Vendedor",
+        "Status",
+        "Pedido Gerado",
+        "NF Vinculada",
+        "Motivo de Perda (Padrão)",
+        "Observação da Perda / Geral",
+        "Valor Total (R$)",
+    ]
+    ws.append(colunas)
+    for col_idx in range(1, len(colunas) + 1):
+        c = ws.cell(row=1, column=col_idx)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+    status_label_map = {
+        "FINALIZADO": "Realizado / Ganho",
+        "PENDENTE": "Em Aberto / Pendente",
+        "PERDIDO": "Perdido / Cancelado",
+    }
+
+    for orc in tabela_orcamentos:
+        cid_uf = f"{orc.get('cidade') or ''}{'/' + orc.get('uf') if orc.get('uf') else ''}".strip("/")
+        obs_texto = orc.get("motivo_perda") or orc.get("observacao") or ""
+        ws.append(
+            [
+                orc.get("numero_orcamento", ""),
+                orc.get("empresa", ""),
+                orc.get("data_str", ""),
+                orc.get("cliente_nome", ""),
+                cid_uf,
+                orc.get("vendedor_nome", ""),
+                status_label_map.get(orc.get("status_consolidado"), orc.get("status_consolidado", "")),
+                orc.get("pedido_gerado") or "",
+                orc.get("numero_nota") or "",
+                orc.get("motivo_perda_padrao", "-"),
+                obs_texto,
+                float(orc.get("valor_total", 0.0)),
+            ]
+        )
+        r = ws.max_row
+        for c_idx in range(1, len(colunas) + 1):
+            ws.cell(row=r, column=c_idx).border = thin_border
+        ws.cell(row=r, column=12).number_format = "R$ #,##0.00"
+
+    larguras = [15, 16, 14, 38, 20, 18, 22, 24, 14, 28, 45, 18]
+    for idx, larg in enumerate(larguras, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = larg
+
+    # Aba 2: Resumo do Mês
+    ws_resumo = wb.create_sheet(title="Resumo Orçamentos")
+    ws_resumo.append(["Indicador", "Valor"])
+    for col_idx in (1, 2):
+        c = ws_resumo.cell(row=1, column=col_idx)
+        c.fill = header_fill
+        c.font = header_font
+
+    for label, val in [
+        ("Visão / Escopo", vendedora_selecionada),
+        ("Empresa", empresa_filtro),
+        ("Período (Mês/Ano)", f"{mes_selecionado:02d}/{ano_selecionado}"),
+        ("Qtd Total de Orçamentos no Mês", kpis.get("qtd_total", 0)),
+        ("Valor Total Orçado (R$)", kpis.get("valor_orcado", "R$ 0,00")),
+        ("Ticket Médio por Orçamento", kpis.get("ticket_medio", "R$ 0,00")),
+        ("Orçamentos Realizados / Ganhos (R$)", kpis.get("valor_realizado", "R$ 0,00")),
+        ("% Orçamentos Realizados (em R$)", kpis.get("pct_realizado_valor", "0.0%")),
+        ("Qtd Orçamentos Realizados", f"{kpis.get('qtd_realizados', 0)} ({kpis.get('pct_realizado_qtd', '0.0%')})"),
+        ("Orçamentos em Aberto / Pendentes (R$)", kpis.get("valor_pendente", "R$ 0,00")),
+        ("% em Aberto (em R$)", kpis.get("pct_pendente_valor", "0.0%")),
+        ("Orçamentos Perdidos / Cancelados (R$)", kpis.get("valor_perdido", "R$ 0,00")),
+        ("% Perdidos (em R$)", kpis.get("pct_perdido_valor", "0.0%")),
+    ]:
+        ws_resumo.append([label, val])
+
+    ws_resumo.column_dimensions["A"].width = 40
+    ws_resumo.column_dimensions["B"].width = 26
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    nome_arq = f"orcamentos_{vendedora_selecionada.lower()}_{mes_selecionado:02d}_{ano_selecionado}.xlsx"
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{nome_arq}"'
+    return response
+
+
+@login_required
 def dashboard_financeiro_view(request):
     """
     Página Financeira (Contas a Receber & Contas a Pagar):
     Focada no cálculo do Lucro Líquido (DRE Simplificado) e na Conciliação Bancária.
-    Restrita a Administradores e Supervisores.
+    Restrita exclusivamente ao perfil Administrador.
     """
     from .models import ContaPagar, ContaReceber
 
     user = request.user
-    if not (getattr(user, "is_admin", False) or getattr(user, "is_supervisor", False)):
+    if not getattr(user, "is_admin", False):
         if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS"):
             return redirect("dashboard_estoque")
         return redirect("dashboard_vendas")
