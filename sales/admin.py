@@ -1,11 +1,14 @@
 from django.contrib import admin
 from .models import (
+    ClassificacaoCusto,
+    ConfiguracaoFinanceira,
     ContaPagar,
     ContaReceber,
     LogSincronizacao,
     MetaVendedor,
     NotaFiscal,
     Orcamento,
+    ItemOrcamento,
     Vendedor,
 )
 
@@ -73,6 +76,24 @@ class OrcamentoAdmin(admin.ModelAdmin):
     date_hierarchy = "data_emissao"
 
 
+@admin.register(ItemOrcamento)
+class ItemOrcamentoAdmin(admin.ModelAdmin):
+    list_display = (
+        "id_item_erp",
+        "numero_orcamento",
+        "empresa",
+        "data_emissao",
+        "codigo_produto",
+        "descricao_produto",
+        "quantidade",
+        "valor_total",
+        "vendedor_nome",
+    )
+    list_filter = ("empresa", "data_emissao", "vendedor_nome")
+    search_fields = ("numero_orcamento", "codigo_produto", "descricao_produto", "cliente_nome")
+    date_hierarchy = "data_emissao"
+
+
 @admin.register(MetaVendedor)
 class MetaVendedorAdmin(admin.ModelAdmin):
     list_display = ("vendedor_nome", "mes", "ano", "valor", "titulo_meta", "data_atualizacao")
@@ -113,4 +134,36 @@ class LogSincronizacaoAdmin(admin.ModelAdmin):
         "registros_criados",
         "registros_atualizados",
         "mensagem",
-    )
+    )
+
+
+@admin.register(ConfiguracaoFinanceira)
+class ConfiguracaoFinanceiraAdmin(admin.ModelAdmin):
+    list_display = (
+        "empresa",
+        "saldo_bancario_atual",
+        "reserva_minima",
+        "alerta_aumento_pct",
+        "alerta_aumento_valor",
+        "usuario_atualizacao",
+        "data_atualizacao",
+    )
+    list_editable = ("saldo_bancario_atual", "reserva_minima", "alerta_aumento_pct", "alerta_aumento_valor")
+
+
+@admin.register(ClassificacaoCusto)
+class ClassificacaoCustoAdmin(admin.ModelAdmin):
+    list_display = (
+        "conta_chave",
+        "categoria",
+        "subcategoria",
+        "tipo_custo",
+        "recorrente",
+        "editado_manualmente",
+        "atualizado_por",
+        "data_atualizacao",
+    )
+    list_editable = ("categoria", "subcategoria", "tipo_custo", "recorrente")
+    list_filter = ("tipo_custo", "categoria", "recorrente", "editado_manualmente")
+    search_fields = ("conta_chave", "grupo_conta_erp", "centro_custo_erp", "categoria", "subcategoria")
+

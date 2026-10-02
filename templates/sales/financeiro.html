@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Financeiro & Conciliação - AMM{% endblock %}
+{% block title %}Financeiro, Fluxo de Caixa & Gestão de Custos - AMM{% endblock %}
 
 {% block extra_head %}
 <style>
@@ -23,7 +23,7 @@
         z-index: 20;
         background-color: #1e293b !important;
         color: #ffffff !important;
-        font-size: 0.77rem;
+        font-size: 0.76rem;
         text-transform: uppercase;
         letter-spacing: 0.3px;
         vertical-align: middle;
@@ -41,6 +41,14 @@
     .row-conciliado td {
         background-color: #f0fdf4 !important;
     }
+    .row-risco-caixa td {
+        background-color: #fef2f2 !important;
+    }
+    .row-mes-selecionado td {
+        background-color: #eff6ff !important;
+        border-top: 2px solid #3b82f6;
+        border-bottom: 2px solid #3b82f6;
+    }
     .dre-table td {
         padding: 0.55rem 0.75rem;
         font-size: 0.88rem;
@@ -55,6 +63,22 @@
         font-weight: 700;
         font-size: 0.95rem;
     }
+    .nav-pills-amm .nav-link {
+        color: #334155;
+        font-weight: 600;
+        border-radius: 8px;
+        padding: 0.55rem 1.1rem;
+        border: 1px solid #cbd5e1;
+        background-color: #ffffff;
+    }
+    .nav-pills-amm .nav-link.active {
+        background-color: #0f172a;
+        color: #ffffff;
+        border-color: #0f172a;
+    }
+    .cursor-pointer {
+        cursor: pointer;
+    }
 </style>
 {% endblock %}
 
@@ -62,22 +86,32 @@
 <!-- Cabeçalho -->
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
     <div>
-        <h2 class="fw-bold text-primary mb-0">💰 Financeiro — Lucro Líquido & Conciliação Bancária</h2>
+        <h2 class="fw-bold text-primary mb-0">💰 Central Financeira — Fluxo de Caixa, Liquidez & Gestão de Custos</h2>
         <small class="text-muted">
-            Empresa: <strong>{{ empresa_filtro }}</strong> |
-            Regime: <strong>{% if regime == 'CAIXA' %}Caixa (Data de Recebimento / Pagamento){% else %}Competência (Data de Vencimento){% endif %}</strong> |
+            Empresa: <strong>{% if empresa_filtro == 'TODAS' %}Todas (Consolidado){% else %}{{ empresa_filtro }}{% endif %}</strong> |
+            Horizonte: <strong>Próximos {{ horizonte_meses }} meses</strong> |
+            Mês em Foco: <strong>{{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }}</strong> |
             Portador: <strong>{{ portador_filtro }}</strong> |
-            Período: <strong>{{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }}</strong>
+            Status: <strong>{{ status_filtro }}</strong>
+            {% if fluxo.resumo_intercompany.ativo and fluxo.resumo_intercompany.tem_transferencias %}
+            | <span class="badge bg-info-subtle text-info-emphasis border">🔄 Transferências internas neutralizadas no consolidado: {{ fluxo.resumo_intercompany.total_neutralizado }}</span>
+            {% endif %}
         </small>
     </div>
     <div class="d-flex flex-wrap gap-2 no-print">
+        <button type="button" class="btn btn-primary btn-sm fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#modalSaldoBancario">
+            🏦 Informar Saldo Bancário Manual
+        </button>
+        <button type="button" class="btn btn-outline-primary btn-sm fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#modalClassificacaoCustos">
+            ⚙️ Classificar Contas de Custo
+        </button>
         {% if request.user.is_admin %}
         <form method="post" action="{% url 'disparar_sincronizacao' %}" class="m-0">
             {% csrf_token %}
             <input type="hidden" name="acao" value="financeiro_hardness">
             <input type="hidden" name="next" value="{{ request.get_full_path }}">
             <button type="submit" class="btn btn-outline-secondary btn-sm fw-semibold shadow-sm" title="Sincronizar Contas a Receber e Contas a Pagar no Hardness">
-                🔄 Sincronizar Financeiro (CR/CP)
+                🔄 Sincronizar ERP
             </button>
         </form>
         {% endif %}
@@ -87,10 +121,12 @@
     </div>
 </div>
 
-<!-- Barra de Filtros -->
-<div class="card card-kpi p-3 mb-4 bg-white no-print">
-    <form method="get" class="row g-3 align-items-end">
-        <div class="col-lg-2 col-md-4 col-6">
+<!-- Barra Consistente de Filtros (Seção 16) -->
+<div class="card card-kpi p-3 mb-3 bg-white no-print">
+    <form method="get" id="formFiltrosFinanceiro" class="row g-2 align-items-end">
+        <input type="hidden" name="aba" id="inputAbaAtiva" value="{{ aba_ativa }}">
+
+        <div class="col-xl-2 col-md-4 col-6">
             <label for="id_empresa" class="form-label small fw-bold text-muted mb-1">🏢 Empresa:</label>
             <select id="id_empresa" name="empresa" class="form-select form-select-sm" onchange="this.form.submit()">
                 <option value="TODAS" {% if empresa_filtro == 'TODAS' %}selected{% endif %}>Todas (Consolidado)</option>
@@ -100,26 +136,17 @@
             </select>
         </div>
 
-        <div class="col-lg-3 col-md-4 col-6">
-            <label for="id_regime" class="form-label small fw-bold text-muted mb-1">⚖️ Regime de Apuração:</label>
-            <select id="id_regime" name="regime" class="form-select form-select-sm" onchange="this.form.submit()">
-                <option value="CAIXA" {% if regime == 'CAIXA' %}selected{% endif %}>💵 Regime de Caixa (Baixas no Mês)</option>
-                <option value="COMPETENCIA" {% if regime == 'COMPETENCIA' %}selected{% endif %}>📅 Por Vencimento no Mês</option>
+        <div class="col-xl-2 col-md-4 col-6">
+            <label for="id_horizonte" class="form-label small fw-bold text-muted mb-1">🔭 Período Projeção:</label>
+            <select id="id_horizonte" name="horizonte" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="3" {% if horizonte_meses == 3 %}selected{% endif %}>Próximos 3 meses</option>
+                <option value="6" {% if horizonte_meses == 6 %}selected{% endif %}>Próximos 6 meses</option>
+                <option value="12" {% if horizonte_meses == 12 %}selected{% endif %}>Próximos 12 meses</option>
             </select>
         </div>
 
-        <div class="col-lg-3 col-md-4 col-12">
-            <label for="id_portador" class="form-label small fw-bold text-muted mb-1">🏦 Portador / Banco (Conciliação):</label>
-            <select id="id_portador" name="portador" class="form-select form-select-sm" onchange="this.form.submit()">
-                <option value="TODOS" {% if portador_filtro == 'TODOS' %}selected{% endif %}>Todos os Portadores / Bancos</option>
-                {% for port in portadores_disponiveis %}
-                <option value="{{ port }}" {% if portador_filtro == port %}selected{% endif %}>{{ port }}</option>
-                {% endfor %}
-            </select>
-        </div>
-
-        <div class="col-lg-2 col-md-4 col-6">
-            <label for="id_mes" class="form-label small fw-bold text-muted mb-1">📅 Mês:</label>
+        <div class="col-xl-2 col-md-4 col-6">
+            <label for="id_mes" class="form-label small fw-bold text-muted mb-1">📅 Mês Específico:</label>
             <select id="id_mes" name="mes" class="form-select form-select-sm" onchange="this.form.submit()">
                 {% for num, nome in meses %}
                 <option value="{{ num }}" {% if mes_selecionado == num %}selected{% endif %}>
@@ -129,7 +156,7 @@
             </select>
         </div>
 
-        <div class="col-lg-1 col-md-4 col-6">
+        <div class="col-xl-1 col-md-3 col-6">
             <label for="id_ano" class="form-label small fw-bold text-muted mb-1">📆 Ano:</label>
             <select id="id_ano" name="ano" class="form-select form-select-sm" onchange="this.form.submit()">
                 {% for a in anos %}
@@ -138,342 +165,1589 @@
             </select>
         </div>
 
-        <div class="col-lg-1 col-md-4 col-12">
+        <div class="col-xl-2 col-md-3 col-6">
+            <label for="id_portador" class="form-label small fw-bold text-muted mb-1">🏦 Portador / Banco:</label>
+            <select id="id_portador" name="portador" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODOS" {% if portador_filtro == 'TODOS' %}selected{% endif %}>Todos os Bancos</option>
+                {% for port in portadores_disponiveis %}
+                <option value="{{ port }}" {% if portador_filtro == port %}selected{% endif %}>{{ port }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-xl-2 col-md-3 col-6">
+            <label for="id_status" class="form-label small fw-bold text-muted mb-1">📌 Status:</label>
+            <select id="id_status" name="status" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="TODOS" {% if status_filtro == 'TODOS' %}selected{% endif %}>Todos os Status</option>
+                <option value="A_VENCER" {% if status_filtro == 'A_VENCER' %}selected{% endif %}>A vencer</option>
+                <option value="RECEBIDO" {% if status_filtro == 'RECEBIDO' %}selected{% endif %}>Recebido / Pago</option>
+                <option value="VENCIDO" {% if status_filtro == 'VENCIDO' %}selected{% endif %}>Vencido</option>
+            </select>
+        </div>
+
+        <div class="col-xl-1 col-md-3 col-12">
             <button type="submit" class="btn btn-primary btn-sm w-100 fw-semibold">Filtrar</button>
         </div>
     </form>
 </div>
 
-<!-- Linha de KPIs Principais -->
-<div class="row g-3 mb-4">
-    <!-- 1. Entradas / Contas a Receber -->
-    <div class="col-xl-3 col-md-6">
-        <div class="card card-metric p-3 bg-white border-start border-success border-4 h-100">
-            <div class="d-flex justify-content-between align-items-center">
-                <span class="text-muted small fw-bold">🟢 Entradas Recebidas (CR)</span>
-                <span class="badge bg-success-subtle text-success border">{{ kpis.qtd_cr_recebidos }} baixados</span>
-            </div>
-            <h4 class="fw-bold text-success mb-1 mt-1">{{ kpis.entradas_recebidas }}</h4>
-            <small class="text-muted">
-                A receber no mês: <strong>{{ kpis.saldo_a_receber }}</strong> ({{ kpis.qtd_cr_pendentes }} títulos)
-            </small>
-        </div>
-    </div>
+<!-- Navegação de Módulos do Financeiro (Seção 19 + Módulo Gestão de Custos) -->
+<ul class="nav nav-pills nav-pills-amm gap-2 mb-4 no-print" id="moduloFinTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'fluxo' %}active{% endif %}" id="tab-btn-fluxo"
+                data-bs-toggle="pill" data-bs-target="#pane-fluxo" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='fluxo'">
+            💧 1. Fluxo de Caixa & Liquidez
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'custos' %}active{% endif %}" id="tab-btn-custos"
+                data-bs-toggle="pill" data-bs-target="#pane-custos" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='custos'">
+            📊 2. Gestão de Custos (AMM EPIs)
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'dre' %}active{% endif %}" id="tab-btn-dre"
+                data-bs-toggle="pill" data-bs-target="#pane-dre" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='dre'">
+            🧮 3. Resultado / DRE
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if aba_ativa == 'conciliacao' %}active{% endif %}" id="tab-btn-conciliacao"
+                data-bs-toggle="pill" data-bs-target="#pane-conciliacao" type="button" role="tab"
+                onclick="document.getElementById('inputAbaAtiva').value='conciliacao'">
+            🏦 4. Conciliação Bancária
+        </button>
+    </li>
+</ul>
 
-    <!-- 2. Saídas / Contas a Pagar -->
-    <div class="col-xl-3 col-md-6">
-        <div class="card card-metric p-3 bg-white border-start border-danger border-4 h-100">
-            <div class="d-flex justify-content-between align-items-center">
-                <span class="text-muted small fw-bold">🔴 Saídas Pagas (CP)</span>
-                <span class="badge bg-danger-subtle text-danger border">{{ kpis.qtd_cp_pagos }} pagos</span>
-            </div>
-            <h4 class="fw-bold text-danger mb-1 mt-1">{{ kpis.saidas_pagas }}</h4>
-            <small class="text-muted">
-                A pagar no mês: <strong>{{ kpis.saldo_a_pagar }}</strong> ({{ kpis.qtd_cp_pendentes }} títulos)
-            </small>
-        </div>
-    </div>
+<div class="tab-content" id="moduloFinTabsContent">
+    <!-- ========================================================================= -->
+    <!-- ABA 1: FLUXO DE CAIXA, LIQUIDEZ, PROJEÇÃO, DIÁRIO E INADIMPLÊNCIA         -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'fluxo' %}show active{% endif %}" id="pane-fluxo" role="tabpanel">
 
-    <!-- 3. Lucro Operacional (Antes de Sócios) -->
-    <div class="col-xl-3 col-md-6">
-        <div class="card card-metric p-3 bg-white border-start border-info border-4 h-100">
-            <div class="d-flex justify-content-between align-items-center">
-                <span class="text-muted small fw-bold">📈 Resultado Operacional</span>
-                <span class="badge bg-info-subtle text-info-emphasis border">Margem {{ kpis.margem_operacional_pct }}</span>
+        <!-- Semáforo Principal de Liquidez (Seções 6 e 20) -->
+        <div class="card border-2 {{ fluxo.status_geral.classe_card }} p-3 mb-3 shadow-sm">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <div>
+                    <h5 class="fw-bold mb-1">{{ fluxo.status_geral.icone }} {{ fluxo.status_geral.titulo }}</h5>
+                    <p class="mb-0 small fw-semibold">{{ fluxo.status_geral.mensagem }}</p>
+                </div>
+                {% if fluxo.status_geral.acoes_sugeridas %}
+                <button class="btn btn-sm btn-outline-dark fw-semibold" type="button" data-bs-toggle="collapse" data-bs-target="#collapseAcoesGestao">
+                    📋 Ver Ações de Gestão Sugeridas
+                </button>
+                {% endif %}
             </div>
-            <h4 class="fw-bold {% if dre.lucro_operacional_positivo %}text-primary{% else %}text-danger{% endif %} mb-1 mt-1">
-                {{ kpis.lucro_operacional }}
-            </h4>
-            <small class="text-muted">Antes de retiradas de sócios / pró-labore</small>
+            {% if fluxo.status_geral.acoes_sugeridas %}
+            <div class="collapse {% if fluxo.status_geral.exibir_acoes %}show{% endif %} mt-3 pt-2 border-top border-secondary-subtle" id="collapseAcoesGestao">
+                <strong class="small d-block mb-1">Ações de gestão recomendadas para proteção de caixa:</strong>
+                <div class="row g-1 small">
+                    {% for acao in fluxo.status_geral.acoes_sugeridas %}
+                    <div class="col-md-6">• {{ acao }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
         </div>
-    </div>
 
-    <!-- 4. Lucro Líquido do Mês -->
-    <div class="col-xl-3 col-md-6">
-        <div class="card card-metric p-3 bg-white border-start {% if kpis.lucro_liquido_positivo %}border-primary{% else %}border-warning{% endif %} border-4 h-100">
-            <div class="d-flex justify-content-between align-items-center">
-                <span class="text-muted small fw-bold">💎 Lucro Líquido ({{ dre.regime }})</span>
-                <span class="badge {% if kpis.lucro_liquido_positivo %}bg-primary{% else %}bg-danger{% endif %}">
-                    {{ kpis.margem_liquida_pct }}
+        <!-- TOPO: 6 Cards Principais de Liquidez (Seções 2, 5, 7 e 18) -->
+        <div class="row g-3 mb-4">
+            <!-- 1. Saldo Bancário Informado (Manual) -->
+            <div class="col-xl-2 col-md-4 col-sm-6">
+                <div class="card card-metric p-3 bg-white border-start border-dark border-4 h-100">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <span class="text-muted small fw-bold">🏦 Saldo Bancário Informado</span>
+                        <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none no-print"
+                                data-bs-toggle="modal" data-bs-target="#modalSaldoBancario" title="Editar Saldo Bancário Manual">
+                            ✏️
+                        </button>
+                    </div>
+                    <h4 class="fw-bold text-dark mb-1 mt-1">{{ fluxo.topo_liquidez.saldo_bancario_informado }}</h4>
+                    <small class="text-muted d-block" style="font-size: 0.72rem;">
+                        Última atualização: <strong>{{ fluxo.topo_liquidez.data_atualizacao_saldo }}</strong><br>
+                        Resp.: <strong>{{ fluxo.topo_liquidez.usuario_atualizacao_saldo }}</strong>
+                    </small>
+                </div>
+            </div>
+
+            <!-- 2. Contas a Receber (Previsto no mês em foco) -->
+            <div class="col-xl-2 col-md-4 col-sm-6">
+                <div class="card card-metric p-3 bg-white border-start border-success border-4 h-100">
+                    <span class="text-muted small fw-bold">🟢 Contas a Receber</span>
+                    <h4 class="fw-bold text-success mb-1 mt-1">{{ fluxo.topo_liquidez.contas_a_receber }}</h4>
+                    <small class="text-muted d-block" style="font-size: 0.75rem;">
+                        Previsto em aberto ({{ fluxo.topo_liquidez.mes_referencia_str }}):
+                        <strong>{{ fluxo.topo_liquidez.qtd_a_receber }} títulos</strong>
+                    </small>
+                </div>
+            </div>
+
+            <!-- 3. Contas a Pagar (Previsto no mês em foco) -->
+            <div class="col-xl-2 col-md-4 col-sm-6">
+                <div class="card card-metric p-3 bg-white border-start border-danger border-4 h-100">
+                    <span class="text-muted small fw-bold">🔴 Contas a Pagar</span>
+                    <h4 class="fw-bold text-danger mb-1 mt-1">{{ fluxo.topo_liquidez.contas_a_pagar }}</h4>
+                    <small class="text-muted d-block" style="font-size: 0.75rem;">
+                        Previsto em aberto ({{ fluxo.topo_liquidez.mes_referencia_str }}):
+                        <strong>{{ fluxo.topo_liquidez.qtd_a_pagar }} títulos</strong>
+                    </small>
+                </div>
+            </div>
+
+            <!-- 4. Saldo Projetado -->
+            <div class="col-xl-2 col-md-4 col-sm-6">
+                <div class="card card-metric p-3 bg-white border-start border-primary border-4 h-100">
+                    <span class="text-muted small fw-bold">📈 Saldo Projetado</span>
+                    <h4 class="fw-bold {% if fluxo.topo_liquidez.saldo_projetado_raw >= fluxo.topo_liquidez.reserva_minima_raw %}text-primary{% else %}text-danger{% endif %} mb-1 mt-1">
+                        {{ fluxo.topo_liquidez.saldo_projetado }}
+                    </h4>
+                    <small class="text-muted d-block" style="font-size: 0.72rem;">
+                        Saldo bancário + recebimentos previstos − pagamentos previstos
+                    </small>
+                </div>
+            </div>
+
+            <!-- 5. Reserva Mínima -->
+            <div class="col-xl-2 col-md-4 col-sm-6">
+                <div class="card card-metric p-3 bg-white border-start border-warning border-4 h-100">
+                    <span class="text-muted small fw-bold">🛡️ Reserva Mínima</span>
+                    <h4 class="fw-bold text-secondary mb-1 mt-1">{{ fluxo.topo_liquidez.reserva_minima }}</h4>
+                    <small class="text-muted d-block" style="font-size: 0.75rem;">
+                        Colchão mínimo operacional obrigatório da AMM
+                    </small>
+                </div>
+            </div>
+
+            <!-- 6. Disponível para Novas Compras -->
+            <div class="col-xl-2 col-md-4 col-sm-6">
+                <div class="card card-metric p-3 bg-white border-start {% if fluxo.topo_liquidez.disponivel_positivo %}border-success{% else %}border-danger{% endif %} border-4 h-100">
+                    <span class="text-muted small fw-bold">🛒 Disponível</span>
+                    <h4 class="fw-bold {% if fluxo.topo_liquidez.disponivel_positivo %}text-success{% else %}text-danger{% endif %} mb-1 mt-1">
+                        {% if fluxo.topo_liquidez.disponivel_positivo %}🟢{% else %}🔴{% endif %} {{ fluxo.topo_liquidez.disponivel }}
+                    </h4>
+                    <small class="text-muted d-block" style="font-size: 0.72rem;">
+                        Saldo projetado − Reserva mínima ({{ fluxo.topo_liquidez.mes_referencia_str }})
+                    </small>
+                </div>
+            </div>
+        </div>
+
+        <!-- SEÇÃO ABAIXO 1: VISÃO DE FLUXO DE CAIXA DOS PRÓXIMOS 3/6/12 MESES + SIMULADOR DE COMPRAS (Seções 3, 4, 5, 7) -->
+        <div class="row g-3 mb-4">
+            <div class="col-lg-8">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                        <div>
+                            <h5 class="fw-bold mb-0">📊 Fluxo de Caixa Acumulativo — Próximos {{ horizonte_meses }} Meses</h5>
+                            <small class="text-muted">
+                                Clique em qualquer mês para carregar o detalhamento de títulos e o fluxo de caixa diário daquele mês.
+                            </small>
+                        </div>
+                        <div class="btn-group btn-group-sm no-print" role="group">
+                            <a href="?aba=fluxo&empresa={{ empresa_filtro|urlencode }}&horizonte=3&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}&portador={{ portador_filtro|urlencode }}&status={{ status_filtro }}"
+                               class="btn {% if horizonte_meses == 3 %}btn-dark{% else %}btn-outline-dark{% endif %}">Próximos 3 meses</a>
+                            <a href="?aba=fluxo&empresa={{ empresa_filtro|urlencode }}&horizonte=6&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}&portador={{ portador_filtro|urlencode }}&status={{ status_filtro }}"
+                               class="btn {% if horizonte_meses == 6 %}btn-dark{% else %}btn-outline-dark{% endif %}">Próximos 6 meses</a>
+                            <a href="?aba=fluxo&empresa={{ empresa_filtro|urlencode }}&horizonte=12&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}&portador={{ portador_filtro|urlencode }}&status={{ status_filtro }}"
+                               class="btn {% if horizonte_meses == 12 %}btn-dark{% else %}btn-outline-dark{% endif %}">Próximos 12 meses</a>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-hover table-bordered align-middle mb-0">
+                            <thead class="table-dark small text-uppercase">
+                                <tr>
+                                    <th>Mês</th>
+                                    <th class="text-end">Saldo Inicial</th>
+                                    <th class="text-end">Recebimentos Previstos</th>
+                                    <th class="text-end">Pagamentos Previstos</th>
+                                    <th class="text-end">Saldo Projetado</th>
+                                    <th class="text-end">Reserva Mínima</th>
+                                    <th class="text-end">Disponível</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for p in fluxo.projecao_mensal %}
+                                <tr class="{% if p.abaixo_reserva %}row-risco-caixa{% elif p.selecionado %}row-mes-selecionado{% endif %} cursor-pointer"
+                                    onclick="window.location.href='?aba=fluxo&empresa={{ empresa_filtro|urlencode }}&horizonte={{ horizonte_meses }}&mes={{ p.mes }}&ano={{ p.ano }}&portador={{ portador_filtro|urlencode }}&status={{ status_filtro }}'">
+                                    <td class="fw-bold">
+                                        <a href="?aba=fluxo&empresa={{ empresa_filtro|urlencode }}&horizonte={{ horizonte_meses }}&mes={{ p.mes }}&ano={{ p.ano }}&portador={{ portador_filtro|urlencode }}&status={{ status_filtro }}"
+                                           class="text-decoration-none text-dark d-flex align-items-center justify-content-between">
+                                            <span>{{ p.mes_ano_str }}</span>
+                                            {% if p.abaixo_reserva %}
+                                                <span class="badge bg-danger ms-1">🔴 Abaixo da Reserva</span>
+                                            {% elif p.selecionado %}
+                                                <span class="badge bg-primary ms-1">Em foco</span>
+                                            {% endif %}
+                                        </a>
+                                    </td>
+                                    <td class="text-end text-nowrap fw-semibold">{{ p.saldo_inicial }}</td>
+                                    <td class="text-end text-nowrap text-success fw-semibold">
+                                        + {{ p.recebimentos_previstos }}
+                                        <small class="text-muted d-block" style="font-size:0.70rem;">({{ p.qtd_recebimentos }} tít.)</small>
+                                    </td>
+                                    <td class="text-end text-nowrap text-danger fw-semibold">
+                                        - {{ p.pagamentos_previstos }}
+                                        <small class="text-muted d-block" style="font-size:0.70rem;">({{ p.qtd_pagamentos }} tít.)</small>
+                                    </td>
+                                    <td class="text-end text-nowrap fw-bold {% if p.abaixo_reserva %}text-danger{% else %}text-primary{% endif %}">
+                                        {{ p.saldo_projetado }}
+                                    </td>
+                                    <td class="text-end text-nowrap text-muted">{{ p.reserva_minima }}</td>
+                                    <td class="text-end text-nowrap fw-bold {% if p.abaixo_reserva %}text-danger{% else %}text-success{% endif %}">
+                                        {% if p.abaixo_reserva %}
+                                            🔴 {{ p.disponivel }}
+                                            <small class="d-block text-danger" style="font-size:0.70rem;">Faltam {{ p.necessidade_adicional }}</small>
+                                        {% else %}
+                                            🟢 {{ p.disponivel }}
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Simulador de Impacto de Novas Compras por Data/Mês de Vencimento (Seção 7) -->
+            <div class="col-lg-4">
+                <div class="card card-kpi p-3 bg-white h-100 border-top border-4 border-primary">
+                    <h5 class="fw-bold mb-1">🛒 Simulador de Novas Compras</h5>
+                    <small class="text-muted d-block mb-3">
+                        Avalia se um novo compromisso levará o caixa projetado do <strong>mês de vencimento</strong> abaixo da reserva mínima ({{ fluxo.topo_liquidez.reserva_minima }}).
+                    </small>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-7">
+                            <label class="form-label small fw-bold mb-1">Mês de Vencimento da Compra:</label>
+                            <select id="simMesSelect" class="form-select form-select-sm" onchange="executarSimulacaoCompraJS()">
+                                {% for p in fluxo.projecao_mensal %}
+                                <option value="{{ p.ano }}-{{ p.mes|stringformat:'02d' }}"
+                                        data-mes-nome="{{ p.mes_ano_str }}"
+                                        data-saldo-proj="{{ p.saldo_projetado_raw|stringformat:'.2f' }}"
+                                        data-reserva="{{ p.reserva_minima_raw|stringformat:'.2f' }}">
+                                    {{ p.mes_ano_str }} (Disp.: {{ p.disponivel }})
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-5">
+                            <label class="form-label small fw-bold mb-1">Valor da Compra (R$):</label>
+                            <input type="number" step="0.01" min="0" id="simValorInput" class="form-control form-control-sm"
+                                   placeholder="Ex: 60000" value="{{ simulacao_valor }}" oninput="executarSimulacaoCompraJS()">
+                        </div>
+                    </div>
+
+                    <div id="boxResultadoSimulacao" class="p-3 rounded border bg-light">
+                        <div class="text-muted small text-center">
+                            Digite um valor de compra acima para simular instantaneamente o impacto no caixa do mês de vencimento.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SEÇÃO ABAIXO 2: FLUXO DE CAIXA DIÁRIO DO MÊS (Seção 10 e 11) -->
+        <div class="card card-kpi p-3 bg-white mb-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+                <div>
+                    <h5 class="fw-bold mb-0">📅 Fluxo de Caixa Diário — {{ fluxo.topo_liquidez.mes_referencia_str }}</h5>
+                    <small class="text-muted">
+                        Identifica concentrações diárias de pagamentos em que o mês parece positivo, mas um dia específico fica abaixo da reserva mínima.
+                    </small>
+                </div>
+                {% if fluxo.dias_risco_caixa %}
+                <span class="badge bg-danger px-3 py-2">
+                    🔴 Risco de caixa em {{ fluxo.dias_risco_caixa.0.data_str }} — saldo projetado ({{ fluxo.dias_risco_caixa.0.saldo_projetado }}) abaixo da reserva mínima!
                 </span>
+                {% else %}
+                <span class="badge bg-success-subtle text-success border px-3 py-2">
+                    🟢 Nenhum dia abaixo da reserva mínima em {{ fluxo.topo_liquidez.mes_referencia_str }}
+                </span>
+                {% endif %}
             </div>
-            <h4 class="fw-bold {% if kpis.lucro_liquido_positivo %}text-success{% else %}text-danger{% endif %} mb-1 mt-1">
-                {{ kpis.lucro_liquido }}
-            </h4>
-            <small class="text-muted">Resultado líquido final apurado no mês</small>
+
+            <div class="row g-3 align-items-stretch">
+                <div class="col-lg-7">
+                    {% if fluxo.grafico_fluxo_diario %}
+                        {{ fluxo.grafico_fluxo_diario|safe }}
+                    {% endif %}
+                </div>
+                <div class="col-lg-5">
+                    <div class="table-matrix-scroll" style="max-height: 340px;">
+                        <table class="table table-sm table-hover table-sticky mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Data</th>
+                                    <th class="text-end">Entradas</th>
+                                    <th class="text-end">Saídas</th>
+                                    <th class="text-end">Saldo Projetado</th>
+                                    <th class="text-center">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for d in fluxo.fluxo_diario %}
+                                <tr class="{% if d.abaixo_reserva %}row-risco-caixa{% endif %}">
+                                    <td class="fw-bold text-nowrap">{{ d.data_str }}</td>
+                                    <td class="text-end text-success text-nowrap">{{ d.entradas }}</td>
+                                    <td class="text-end text-danger text-nowrap">{{ d.saidas }}</td>
+                                    <td class="text-end fw-bold {% if d.abaixo_reserva %}text-danger{% else %}text-primary{% endif %} text-nowrap">
+                                        {{ d.saldo_projetado }}
+                                    </td>
+                                    <td class="text-center text-nowrap">
+                                        {% if d.abaixo_reserva %}
+                                            <span class="badge bg-danger" title="Saldo projetado abaixo da reserva mínima">🔴 Risco</span>
+                                        {% elif d.concentracao_alta %}
+                                            <span class="badge bg-warning text-dark" title="Alta concentração de pagamentos no dia">🟠 Concentração</span>
+                                        {% else %}
+                                            <span class="badge bg-light text-muted border">OK</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SEÇÃO ABAIXO 3: RESUMO DE CONTAS A RECEBER, INADIMPLÊNCIA E ALERTAS FINANCEIROS (Seções 12, 13, 14, 18) -->
+        <div class="row g-3 mb-4">
+            <!-- Card Resumo Contas a Receber & Inadimplência -->
+            <div class="col-lg-7">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                        <div>
+                            <h5 class="fw-bold mb-0">📋 Resumo de Contas a Receber & Taxa de Inadimplência</h5>
+                            <small class="text-muted">Visão de cobrança, envelhecimento da carteira em aberto e inadimplência por valor e quantidade.</small>
+                        </div>
+                        <button type="button" class="btn btn-danger btn-sm fw-semibold" data-bs-toggle="modal" data-bs-target="#modalListaCobranca">
+                            📞 Abrir Lista de Cobrança ({{ fluxo.resumo_inadimplencia.qtd_em_atraso }} vencidos)
+                        </button>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-4 col-6">
+                            <div class="p-2 border rounded bg-success-subtle">
+                                <small class="text-muted fw-bold d-block">🟢 A Vencer</small>
+                                <h5 class="fw-bold text-success mb-0">{{ fluxo.resumo_inadimplencia.a_vencer }}</h5>
+                                <small class="text-muted">{{ fluxo.resumo_inadimplencia.qtd_a_vencer }} títulos</small>
+                            </div>
+                        </div>
+                        <div class="col-md-4 col-6">
+                            <div class="p-2 border rounded bg-warning-subtle">
+                                <small class="text-muted fw-bold d-block">🟠 Vencido de 1–30 dias</small>
+                                <h5 class="fw-bold text-dark mb-0">{{ fluxo.resumo_inadimplencia.vencido_1_30 }}</h5>
+                                <small class="text-muted">{{ fluxo.resumo_inadimplencia.qtd_vencido_1_30 }} títulos</small>
+                            </div>
+                        </div>
+                        <div class="col-md-4 col-12">
+                            <div class="p-2 border rounded bg-danger-subtle">
+                                <small class="text-muted fw-bold d-block">🔴 Vencido há +30 dias</small>
+                                <h5 class="fw-bold text-danger mb-0">{{ fluxo.resumo_inadimplencia.vencido_mais_30 }}</h5>
+                                <small class="text-muted">{{ fluxo.resumo_inadimplencia.qtd_vencido_mais_30 }} títulos</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-4">
+                            <div class="p-2 border rounded bg-light">
+                                <small class="text-muted d-block">Total em Atraso (Vencido)</small>
+                                <strong class="text-danger fs-6">{{ fluxo.resumo_inadimplencia.total_em_atraso }}</strong>
+                                <span class="badge bg-danger ms-1">{{ fluxo.resumo_inadimplencia.qtd_em_atraso }} tít.</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="p-2 border rounded bg-light">
+                                <small class="text-muted d-block">Total de Contas a Receber</small>
+                                <strong class="text-primary fs-6">{{ fluxo.resumo_inadimplencia.total_contas_receber }}</strong>
+                                <span class="badge bg-secondary ms-1">{{ fluxo.resumo_inadimplencia.qtd_total_contas_receber }} tít.</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="p-2 border rounded bg-light">
+                                <small class="text-muted d-block">Taxa de Inadimplência (Valor / Qtd)</small>
+                                <strong class="text-danger fs-6">{{ fluxo.resumo_inadimplencia.taxa_inadimplencia_valor }}</strong>
+                                <small class="text-muted">({{ fluxo.resumo_inadimplencia.taxa_inadimplencia_qtd }} dos títulos)</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-warning mb-0 py-2 px-3 small">
+                        <strong>💡 Análise de Inadimplência:</strong> {{ fluxo.resumo_inadimplencia.frase_analitica }}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Alertas Financeiros (Seção 18) -->
+            <div class="col-lg-5">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <h5 class="fw-bold mb-2">🚨 Alertas Financeiros Ativos</h5>
+                    <div class="d-flex flex-column gap-2">
+                        {% for al in fluxo.alertas_financeiros %}
+                        <div class="p-2 rounded border {% if al.nivel == 'PERIGO' %}border-danger bg-danger-subtle{% elif al.nivel == 'ATENCAO' %}border-warning bg-warning-subtle{% else %}border-success bg-success-subtle{% endif %}">
+                            <div class="fw-bold small">{{ al.icone }} {{ al.titulo }}</div>
+                            <div class="text-muted" style="font-size: 0.78rem;">{{ al.detalhe }}</div>
+                            {% if al.acao_modal %}
+                            <button type="button" class="btn btn-xs btn-outline-danger btn-sm mt-1 py-0 px-2" data-bs-toggle="modal" data-bs-target="{{ al.acao_modal }}">
+                                Ver Lista de Cobrança
+                            </button>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SEÇÃO ABAIXO 4: CONTAS A RECEBER E CONTAS A PAGAR DO MÊS + EXPLICAÇÃO DA DIVERGÊNCIA 234 vs 242 (Seções 8, 9 e 15) -->
+        <div class="card card-kpi p-3 bg-white mb-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+                <div>
+                    <h5 class="fw-bold mb-0">🗂️ Detalhamento Mensal por Vencimento — {{ fluxo.topo_liquidez.mes_referencia_str }}</h5>
+                    <small class="text-muted">
+                        Todos os títulos cujo vencimento pertence a <strong>{{ fluxo.topo_liquidez.mes_referencia_str }}</strong>, separando claramente <strong>Em Aberto (Previsto)</strong> de <strong>Já Baixado (Realizado)</strong>.
+                    </small>
+                </div>
+                <div class="d-flex flex-wrap gap-1">
+                    <span class="badge bg-dark px-2 py-1">
+                        Total Vencimento CR: {{ fluxo.diagnostico_titulos_cr.qtd_total_vencimento }} tít. ({{ fluxo.diagnostico_titulos_cr.valor_total_vencimento }})
+                    </span>
+                    <span class="badge bg-warning text-dark px-2 py-1">
+                        Em Aberto (A Receber): {{ fluxo.diagnostico_titulos_cr.qtd_em_aberto }} tít. ({{ fluxo.diagnostico_titulos_cr.valor_em_aberto }})
+                    </span>
+                    <span class="badge bg-success px-2 py-1">
+                        Já Recebidos: {{ fluxo.diagnostico_titulos_cr.qtd_ja_recebidos }} tít. ({{ fluxo.diagnostico_titulos_cr.valor_ja_recebidos }})
+                    </span>
+                </div>
+            </div>
+
+            {% if fluxo.diagnostico_titulos_cr.qtd_ja_recebidos > 0 %}
+            <div class="alert alert-info py-2 px-3 small mb-3">
+                <strong>🔍 Reconciliação de Quantitativos (Auditoria de Títulos — Seção 15):</strong>
+                No mês de <strong>{{ fluxo.topo_liquidez.mes_referencia_str }}</strong>, existem <strong>{{ fluxo.diagnostico_titulos_cr.qtd_total_vencimento }} títulos</strong> emitidos com vencimento no mês ({{ fluxo.diagnostico_titulos_cr.valor_total_vencimento }}).
+                Desses, <strong>{{ fluxo.diagnostico_titulos_cr.qtd_em_aberto }} títulos ({{ fluxo.diagnostico_titulos_cr.valor_em_aberto }})</strong> estão <strong>em aberto (A Receber)</strong> e
+                <strong>{{ fluxo.diagnostico_titulos_cr.qtd_ja_recebidos }} título(s) ({{ fluxo.diagnostico_titulos_cr.valor_ja_recebidos }})</strong> já foram <strong>baixados/recebidos antecipadamente no ERP</strong>
+                (portanto já compõem o saldo bancário realizado e não são somados em duplicidade como previsão futura).
+            </div>
+            {% endif %}
+
+            <ul class="nav nav-tabs mb-3" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active fw-bold" data-bs-toggle="tab" data-bs-target="#pane-cr-mes" type="button" role="tab">
+                        🟢 {{ fluxo.topo_liquidez.mes_referencia_str }} — Contas a Receber ({{ fluxo.detalhe_cr_mes|length }} exibidos | Previsto: {{ fluxo.topo_liquidez.contas_a_receber }})
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link fw-bold" data-bs-toggle="tab" data-bs-target="#pane-cp-mes" type="button" role="tab">
+                        🔴 {{ fluxo.topo_liquidez.mes_referencia_str }} — Contas a Pagar ({{ fluxo.detalhe_cp_mes|length }} exibidos | Previsto: {{ fluxo.topo_liquidez.contas_a_pagar }})
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content">
+                <!-- Contas a Receber por Mês (Seção 8) -->
+                <div class="tab-pane fade show active" id="pane-cr-mes" role="tabpanel">
+                    <table id="tabelaCRMes" class="table table-hover align-middle w-100 table-sticky">
+                        <thead>
+                            <tr>
+                                <th>Cliente</th>
+                                <th>Empresa</th>
+                                <th>Documento</th>
+                                <th>Vencimento</th>
+                                <th class="text-end">Valor Título</th>
+                                <th>Status</th>
+                                <th>Portador</th>
+                                <th>Data Recebimento</th>
+                                <th class="text-end">Valor Recebido</th>
+                                <th class="text-end">Saldo Previsto</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for cr in fluxo.detalhe_cr_mes %}
+                            <tr>
+                                <td class="fw-semibold">{{ cr.cliente_nome }}</td>
+                                <td class="text-nowrap"><small class="text-muted">{{ cr.empresa }}</small></td>
+                                <td class="fw-bold text-nowrap">{{ cr.documento }} <small class="text-muted">({{ cr.parcela }})</small></td>
+                                <td class="text-nowrap" data-order="{{ cr.data_venc_iso }}">{{ cr.data_venc_str }}</td>
+                                <td class="text-end text-nowrap" data-order="{{ cr.valor_total|stringformat:'.2f' }}">{{ cr.valor_total_fmt }}</td>
+                                <td class="text-nowrap">
+                                    {% if cr.status == 'RECEBIDO' %}
+                                        <span class="badge bg-success">Recebido{% if cr.recebido_antecipado %} (Antecip.){% endif %}</span>
+                                    {% elif cr.status == 'VENCIDO' %}
+                                        <span class="badge bg-danger">Vencido</span>
+                                    {% else %}
+                                        <span class="badge bg-warning text-dark">A Vencer</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ cr.portador }}</span></td>
+                                <td class="text-nowrap" data-order="{{ cr.data_rec_iso }}">{{ cr.data_rec_str }}</td>
+                                <td class="text-end text-success fw-semibold text-nowrap" data-order="{{ cr.valor_recebido|stringformat:'.2f' }}">{{ cr.valor_recebido_fmt }}</td>
+                                <td class="text-end fw-bold text-primary text-nowrap" data-order="{{ cr.valor_aberto|stringformat:'.2f' }}">{{ cr.valor_aberto_fmt }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Contas a Pagar por Mês (Seção 9) -->
+                <div class="tab-pane fade" id="pane-cp-mes" role="tabpanel">
+                    <table id="tabelaCPMes" class="table table-hover align-middle w-100 table-sticky">
+                        <thead>
+                            <tr>
+                                <th>Fornecedor</th>
+                                <th>Empresa</th>
+                                <th>Documento</th>
+                                <th>Vencimento</th>
+                                <th class="text-end">Valor Título</th>
+                                <th>Categoria</th>
+                                <th>Status</th>
+                                <th>Portador</th>
+                                <th>Data Pagamento</th>
+                                <th class="text-end">Valor Pago</th>
+                                <th class="text-end">Saldo Previsto</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for cp in fluxo.detalhe_cp_mes %}
+                            <tr>
+                                <td class="fw-semibold">{{ cp.fornecedor_nome }}</td>
+                                <td class="text-nowrap"><small class="text-muted">{{ cp.empresa }}</small></td>
+                                <td class="fw-bold text-nowrap">{{ cp.documento }} <small class="text-muted">({{ cp.parcela }})</small></td>
+                                <td class="text-nowrap" data-order="{{ cp.data_venc_iso }}">{{ cp.data_venc_str }}</td>
+                                <td class="text-end text-nowrap" data-order="{{ cp.valor_total|stringformat:'.2f' }}">{{ cp.valor_total_fmt }}</td>
+                                <td class="small text-muted">{{ cp.categoria }}</td>
+                                <td class="text-nowrap">
+                                    {% if cp.status == 'PAGO' %}
+                                        <span class="badge bg-success">Pago</span>
+                                    {% elif cp.status == 'VENCIDO' %}
+                                        <span class="badge bg-danger">Vencido</span>
+                                    {% else %}
+                                        <span class="badge bg-warning text-dark">A Vencer</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ cp.portador }}</span></td>
+                                <td class="text-nowrap" data-order="{{ cp.data_pag_iso }}">{{ cp.data_pag_str }}</td>
+                                <td class="text-end text-danger fw-semibold text-nowrap" data-order="{{ cp.valor_pago|stringformat:'.2f' }}">{{ cp.valor_pago_fmt }}</td>
+                                <td class="text-end fw-bold text-danger text-nowrap" data-order="{{ cp.valor_aberto|stringformat:'.2f' }}">{{ cp.valor_aberto_fmt }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
-</div>
 
-<!-- Seção 1: Apuração do Lucro Líquido (DRE Simplificado) + Gráfico -->
-<div class="row g-3 mb-4">
-    <div class="col-lg-5">
-        <div class="card card-kpi p-3 bg-white h-100">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <h5 class="fw-bold mb-0">🧮 Apuração do Lucro Líquido ({{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }})</h5>
-                <span class="badge bg-dark">{{ dre.regime }}</span>
+    <!-- ========================================================================= -->
+    <!-- ABA 2: MÓDULO DE GESTÃO E CONTROLE DE CUSTOS | AMM EPIs                   -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'custos' %}show active{% endif %}" id="pane-custos" role="tabpanel">
+
+        <!-- Seção 23 & 24: Resumo Executivo Automático ("O que está acontecendo com nossos custos?") -->
+        <div class="card border-2 border-{{ custos.ind_lucro_liquido.diagnostico.classe }} p-3 mb-4 bg-white shadow-sm">
+            <div class="row align-items-center g-3">
+                <div class="col-lg-8">
+                    <h5 class="fw-bold text-dark mb-1">
+                        🧠 O que está acontecendo com nossos custos? ({{ custos.resumo_executivo.mes_atual_nome }} vs {{ custos.resumo_executivo.mes_anterior_nome }})
+                    </h5>
+                    <p class="mb-2 small">
+                        • <strong>Faturamento comercial</strong> ({{ custos.resumo_executivo.faturamento_atual }}) variou
+                        <strong>{{ custos.resumo_executivo.faturamento_var_pct }}</strong> em relação ao mês anterior ({{ custos.resumo_executivo.faturamento_anterior }}).<br>
+                        • <strong>Custos totais</strong> ({{ custos.ind_custo_total.atual }}) variaram
+                        <strong>{{ custos.resumo_executivo.custos_var_pct }} ({{ custos.resumo_executivo.custos_var_rs }})</strong>.<br>
+                        {% if custos.resumo_executivo.principais_responsaveis %}
+                        • <strong>Principais variações do período:</strong>
+                        {% for resp in custos.resumo_executivo.principais_responsaveis %}
+                            <span class="badge bg-light text-dark border me-1">{{ resp.categoria }}: {{ resp.var_rs }} ({{ resp.var_pct }})</span>
+                        {% endfor %}<br>
+                        {% endif %}
+                        • Como consequência, a <strong>margem líquida</strong> passou de
+                        <strong>{{ custos.resumo_executivo.margem_anterior }}</strong> para <strong>{{ custos.resumo_executivo.margem_atual }}</strong>.
+                    </p>
+                </div>
+                <div class="col-lg-4">
+                    <div class="p-3 rounded bg-{{ custos.ind_lucro_liquido.diagnostico.classe }}-subtle border border-{{ custos.ind_lucro_liquido.diagnostico.classe }}">
+                        <div class="fw-bold">{{ custos.ind_lucro_liquido.diagnostico.icone }} {{ custos.ind_lucro_liquido.diagnostico.titulo }}</div>
+                        <small class="d-block mt-1">{{ custos.ind_lucro_liquido.diagnostico.justificativa }}</small>
+                    </div>
+                </div>
             </div>
+        </div>
+
+        <!-- Linha 1 de Indicadores de Custos: Custo Fixo, Custo Variável, CMV, Custo Total, Lucro Líquido (Seções 3, 4, 5, 12, 13) -->
+        <div class="row g-3 mb-3">
+            <!-- 3. Custo Fixo do Mês -->
+            <div class="col-xl-3 col-md-6">
+                <div class="card card-metric p-3 bg-white border-start border-warning border-4 h-100">
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted small fw-bold">🏢 Custo Fixo do Mês</span>
+                        <span class="badge bg-warning-subtle text-dark border">{{ custos.ind_fixo.pct_faturamento }} do Fat.</span>
+                    </div>
+                    <h4 class="fw-bold text-dark my-1">{{ custos.ind_fixo.atual }}</h4>
+                    <small class="text-muted d-block">
+                        Mês ant.: <strong>{{ custos.ind_fixo.anterior }}</strong> |
+                        Var.: <strong class="{% if custos.ind_fixo.aumentou %}text-danger{% else %}text-success{% endif %}">{{ custos.ind_fixo.var_rs }} ({{ custos.ind_fixo.var_pct }})</strong>
+                    </small>
+                    <small class="text-muted d-block" style="font-size: 0.72rem;">
+                        Média 3M: {{ custos.ind_fixo.media_3m }} | Média 6M: {{ custos.ind_fixo.media_6m }}
+                    </small>
+                </div>
+            </div>
+
+            <!-- 4. Custo Variável do Mês -->
+            <div class="col-xl-3 col-md-6">
+                <div class="card card-metric p-3 bg-white border-start border-info border-4 h-100">
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted small fw-bold">📊 Custo Variável do Mês</span>
+                        <span class="badge bg-info-subtle text-dark border">{{ custos.ind_variavel.pct_faturamento }} do Fat.</span>
+                    </div>
+                    <h4 class="fw-bold text-dark my-1">{{ custos.ind_variavel.atual }}</h4>
+                    <small class="text-muted d-block">
+                        Mês ant.: <strong>{{ custos.ind_variavel.anterior }}</strong> |
+                        Var.: <strong class="{% if custos.ind_variavel.aumentou %}text-danger{% else %}text-success{% endif %}">{{ custos.ind_variavel.var_rs }} ({{ custos.ind_variavel.var_pct }})</strong>
+                    </small>
+                    <small class="text-muted d-block" style="font-size: 0.72rem;">
+                        Média 3M: {{ custos.ind_variavel.media_3m }} | Média 6M: {{ custos.ind_variavel.media_6m }}
+                    </small>
+                </div>
+            </div>
+
+            <!-- 5. Custo de Mercadorias / CMV -->
+            <div class="col-xl-3 col-md-6">
+                <div class="card card-metric p-3 bg-white border-start border-danger border-4 h-100">
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted small fw-bold">📦 Custo de Mercadorias (CMV)</span>
+                        <span class="badge bg-danger-subtle text-danger border">{{ custos.ind_cmv.pct_faturamento }} do Fat.</span>
+                    </div>
+                    <h4 class="fw-bold text-danger my-1">{{ custos.ind_cmv.atual }}</h4>
+                    <small class="text-muted d-block">
+                        Margem Bruta: <strong>{{ custos.ind_cmv.margem_bruta }} ({{ custos.ind_cmv.margem_bruta_pct }})</strong>
+                    </small>
+                    <small class="text-muted d-block" style="font-size: 0.72rem;">
+                        Ant.: {{ custos.ind_cmv.anterior }} ({{ custos.ind_cmv.var_pct }}) | Média 3M: {{ custos.ind_cmv.media_3m }}
+                    </small>
+                </div>
+            </div>
+
+            <!-- 12 & 13. Custo Total & Lucro Líquido -->
+            <div class="col-xl-3 col-md-6">
+                <div class="card card-metric p-3 bg-white border-start border-primary border-4 h-100">
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted small fw-bold">💎 Custo Total & Lucro</span>
+                        <span class="badge bg-primary-subtle text-primary border">Custos: {{ custos.ind_custo_total.pct_faturamento }}</span>
+                    </div>
+                    <h5 class="fw-bold text-dark mb-0 mt-1">Custos: {{ custos.ind_custo_total.atual }} <small class="fs-6 text-muted">({{ custos.ind_custo_total.var_pct }})</small></h5>
+                    <div class="fw-bold {% if custos.ind_lucro_liquido.positivo %}text-success{% else %}text-danger{% endif %}">
+                        Lucro Líq.: {{ custos.ind_lucro_liquido.atual }} ({{ custos.ind_lucro_liquido.margem_atual }})
+                    </div>
+                    <small class="text-muted d-block" style="font-size: 0.72rem;">
+                        Acumulado Ano Custos: {{ custos.ind_custo_total.acumulado_ano }}
+                    </small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Linha 2 de Indicadores Específicos: Comissões + Bonificações (Seção 6) & Transporte: Combustível + Fretes (Seção 7) -->
+        <div class="row g-3 mb-4">
+            <!-- 6. Comissões e Bonificações -->
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="fw-bold mb-0">🤝 Comissões + Bonificações (Despesa Comercial)</h6>
+                        <span class="badge bg-dark">{{ custos.ind_comissoes_bonif.pct_faturamento }} sobre Faturamento (Ant.: {{ custos.ind_comissoes_bonif.pct_faturamento_ant }})</span>
+                    </div>
+                    <div class="row g-2 text-center">
+                        <div class="col-4">
+                            <div class="p-2 border rounded bg-light">
+                                <small class="text-muted d-block">Comissão</small>
+                                <strong class="text-dark">{{ custos.ind_comissoes_bonif.comissao_separada.atual }}</strong>
+                                <small class="d-block text-muted">{{ custos.ind_comissoes_bonif.comissao_separada.pct_faturamento }} fat.</small>
+                            </div>
+                        </div>
+                        <div class="col-4">
+                            <div class="p-2 border rounded bg-light">
+                                <small class="text-muted d-block">Bonificação</small>
+                                <strong class="text-dark">{{ custos.ind_comissoes_bonif.bonificacao_separada.atual }}</strong>
+                                <small class="d-block text-muted">{{ custos.ind_comissoes_bonif.bonificacao_separada.pct_faturamento }} fat.</small>
+                            </div>
+                        </div>
+                        <div class="col-4">
+                            <div class="p-2 border rounded bg-primary-subtle">
+                                <small class="text-muted d-block">Total Comercial</small>
+                                <strong class="text-primary">{{ custos.ind_comissoes_bonif.atual }}</strong>
+                                <small class="d-block {% if custos.ind_comissoes_bonif.aumentou %}text-danger{% else %}text-success{% endif %}">
+                                    {{ custos.ind_comissoes_bonif.var_rs }} ({{ custos.ind_comissoes_bonif.var_pct }})
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 7. Gasolina / Combustível / Transportadoras -->
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="fw-bold mb-0">🚚 Transporte (Combustível / Gasolina + Transportadoras)</h6>
+                        <span class="badge bg-dark">Representa {{ custos.ind_transporte.pct_faturamento }} das vendas (Média 3M: {{ custos.ind_transporte.media_3m }})</span>
+                    </div>
+                    <div class="row g-2 text-center">
+                        <div class="col-4">
+                            <div class="p-2 border rounded bg-light">
+                                <small class="text-muted d-block">Combustível / Gasolina</small>
+                                <strong class="text-dark">{{ custos.ind_transporte.combustivel_separado.atual }}</strong>
+                                <small class="d-block text-muted">{{ custos.ind_transporte.combustivel_separado.pct_faturamento }} fat.</small>
+                            </div>
+                        </div>
+                        <div class="col-4">
+                            <div class="p-2 border rounded bg-light">
+                                <small class="text-muted d-block">Transportadoras / Frete</small>
+                                <strong class="text-dark">{{ custos.ind_transporte.fretes_separado.atual }}</strong>
+                                <small class="d-block text-muted">{{ custos.ind_transporte.fretes_separado.pct_faturamento }} fat.</small>
+                            </div>
+                        </div>
+                        <div class="col-4">
+                            <div class="p-2 border rounded bg-warning-subtle">
+                                <small class="text-muted d-block">Total Transporte</small>
+                                <strong class="text-dark">{{ custos.ind_transporte.atual }}</strong>
+                                <small class="d-block {% if custos.ind_transporte.aumentou %}text-danger{% else %}text-success{% endif %}">
+                                    {{ custos.ind_transporte.var_rs }} ({{ custos.ind_transporte.var_pct }})
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Alertas Inteligentes de Custos, Alerta Custo Fixo 3M & Desvios Fora do Padrão (Seções 10, 17, 18, 21) -->
+        <div class="row g-3 mb-4">
+            <div class="col-lg-7">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h5 class="fw-bold mb-0">🚨 Alertas Inteligentes de Custos (Gatilho: >{{ custos.parametros_alerta.pct }}% e ≥ R$ {{ custos.parametros_alerta.valor }})</h5>
+                        <button type="button" class="btn btn-outline-secondary btn-sm no-print" data-bs-toggle="modal" data-bs-target="#modalClassificacaoCustos">
+                            ⚙️ Ajustar Parâmetros
+                        </button>
+                    </div>
+                    <div class="d-flex flex-column gap-2">
+                        {% for ac in custos.alertas_custos %}
+                        <div class="p-2 rounded border {% if ac.nivel == 'PERIGO' %}border-danger bg-danger-subtle{% elif ac.nivel == 'SUCESSO' %}border-success bg-success-subtle{% else %}border-info bg-info-subtle{% endif %}">
+                            <div class="fw-bold small">{{ ac.icone }} {{ ac.titulo }}</div>
+                            <div class="text-muted" style="font-size: 0.78rem;">{{ ac.detalhe }}</div>
+                        </div>
+                        {% empty %}
+                        <div class="text-muted small p-3 text-center border rounded">
+                            🟢 Nenhum desvio crítico de custo acima dos parâmetros configurados neste mês.
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-5">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <h5 class="fw-bold mb-2">📐 Comportamento Histórico & Custo Fixo (3M)</h5>
+
+                    <!-- Seção 21: Alerta de Crescimento do Custo Fixo em 3 meses -->
+                    <div class="p-2 rounded border mb-3 {% if custos.alerta_custo_fixo_3m.aumentou %}border-danger bg-danger-subtle{% else %}border-success bg-success-subtle{% endif %}">
+                        <div class="fw-bold small">
+                            {% if custos.alerta_custo_fixo_3m.aumentou %}
+                                🔴 Custo fixo variou {{ custos.alerta_custo_fixo_3m.aumento_pct }} nos últimos 3 meses ({{ custos.alerta_custo_fixo_3m.aumento_acumulado }}).
+                            {% else %}
+                                🟢 Custo fixo estável/reduzindo nos últimos 3 meses ({{ custos.alerta_custo_fixo_3m.aumento_pct }}).
+                            {% endif %}
+                        </div>
+                        {% if custos.alerta_custo_fixo_3m.principais_responsaveis %}
+                        <div class="small mt-1">
+                            <strong>Principais responsáveis no Custo Fixo:</strong>
+                            <ol class="mb-0 ps-3">
+                                {% for r_cf in custos.alerta_custo_fixo_3m.principais_responsaveis %}
+                                <li>{{ r_cf.categoria }}: <strong>+{{ r_cf.aumento }}</strong></li>
+                                {% endfor %}
+                            </ol>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Seção 18: Desvios Fora do Padrão Histórico -->
+                    <h6 class="fw-bold small text-uppercase text-muted mb-2">Despesas Fora do Padrão Histórico (Últimos 6M):</h6>
+                    {% for dh in custos.desvios_historico %}
+                    <div class="p-2 rounded border border-danger bg-light mb-2 small">
+                        <strong>🔴 {{ dh.categoria }} — Despesa fora do padrão histórico!</strong><br>
+                        Valor atual: <strong>{{ dh.valor_atual }}</strong> | Média histórica: <strong>{{ dh.media_historica }}</strong> (Faixa: {{ dh.faixa_historica }})<br>
+                        Diferença: <strong class="text-danger">+{{ dh.diferenca_rs }} ({{ dh.diferenca_pct }})</strong>
+                    </div>
+                    {% empty %}
+                    <div class="text-muted small p-2 border rounded bg-light">
+                        🟢 Todas as categorias operam dentro da faixa histórica normal dos últimos 6 meses.
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Gráficos: Composição do Resultado (Seção 14) & Evolução do Lucro Líquido (Seção 15) -->
+        <div class="row g-3 mb-4">
+            <div class="col-lg-5">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if custos.grafico_composicao_faturamento %}
+                        {{ custos.grafico_composicao_faturamento|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem dados suficientes para o gráfico de composição.</div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="col-lg-7">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if custos.grafico_evolucao_lucro %}
+                        {{ custos.grafico_evolucao_lucro|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem dados suficientes para o gráfico de evolução.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Seção 9: O QUE MUDOU? (AUMENTARAM vs DIMINUÍRAM) -->
+        <div class="card card-kpi p-3 bg-white mb-4">
+            <h5 class="fw-bold mb-1">🔄 O Que Mudou? ({{ custos.resumo_executivo.mes_atual_nome }} vs {{ custos.resumo_executivo.mes_anterior_nome }})</h5>
+            <small class="text-muted d-block mb-3">Ordenado automaticamente pela maior variação absoluta em R$.</small>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <div class="p-3 border border-danger rounded bg-danger-subtle bg-opacity-25 h-100">
+                        <h6 class="fw-bold text-danger mb-2">🔺 AUMENTARAM</h6>
+                        {% for item in custos.aumentaram %}
+                        <div class="d-flex justify-content-between align-items-center border-bottom py-1 small">
+                            <span class="fw-semibold">{{ item.categoria }}</span>
+                            <span class="text-danger fw-bold">+{{ item.var_rs }} <small>({{ item.var_pct }})</small></span>
+                        </div>
+                        {% empty %}
+                        <div class="text-muted small">Nenhuma categoria aumentou em relação ao mês anterior.</div>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="p-3 border border-success rounded bg-success-subtle bg-opacity-25 h-100">
+                        <h6 class="fw-bold text-success mb-2">🟢 DIMINUÍRAM</h6>
+                        {% for item in custos.diminuiram %}
+                        <div class="d-flex justify-content-between align-items-center border-bottom py-1 small">
+                            <span class="fw-semibold">{{ item.categoria }}</span>
+                            <span class="text-success fw-bold">{{ item.var_rs }} <small>({{ item.var_pct }})</small></span>
+                        </div>
+                        {% empty %}
+                        <div class="text-muted small">Nenhuma categoria reduziu em relação ao mês anterior.</div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Seção 8, 11 e 17: TOP 10 MAIORES CUSTOS + Custo como % do Faturamento + Médias Históricas -->
+        <div class="card card-kpi p-3 bg-white mb-4">
+            <h5 class="fw-bold mb-1">🏆 Top 10 Maiores Custos & Representatividade sobre Vendas</h5>
             <small class="text-muted d-block mb-3">
-                Faturamento comercial (NFs emitidas no mês): <strong>{{ dre.faturamento_nf }}</strong>
+                Compara o mês atual com o mês anterior, média de 3 e 6 meses, acumulado no ano e percentual sobre o faturamento ({{ custos.faturamento_atual }}).
             </small>
             <div class="table-responsive">
-                <table class="table table-bordered dre-table mb-0 align-middle">
+                <table class="table table-hover table-bordered align-middle mb-0">
+                    <thead class="table-dark small text-uppercase">
+                        <tr>
+                            <th>#</th>
+                            <th>Categoria</th>
+                            <th class="text-end">Atual</th>
+                            <th class="text-end">Mês Anterior</th>
+                            <th class="text-end">Variação R$</th>
+                            <th class="text-end">Variação %</th>
+                            <th class="text-end">% das Vendas</th>
+                            <th class="text-end">Média 3 Meses</th>
+                            <th class="text-end">Média 6 Meses</th>
+                            <th class="text-end">Acumulado Ano</th>
+                        </tr>
+                    </thead>
                     <tbody>
+                        {% for c in custos.top_10_custos %}
                         <tr>
-                            <td class="fw-bold text-success">(+) Entradas / Receitas Apuradas (CR)</td>
-                            <td class="text-end fw-bold text-success">{{ dre.receita_base }}</td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">(-) Fornecedores / Compra de Mercadoria</td>
-                            <td class="text-end text-danger">- {{ dre.custo_mercadoria }}</td>
-                        </tr>
-                        <tr class="dre-row-subtotal">
-                            <td>(=) Margem Bruta Financeira</td>
-                            <td class="text-end {% if dre.margem_bruta_positiva %}text-primary{% else %}text-danger{% endif %}">
-                                {{ dre.margem_bruta }}
+                            <td class="fw-bold text-muted">{{ forloop.counter }}º</td>
+                            <td class="fw-bold">{{ c.categoria }}</td>
+                            <td class="text-end fw-bold text-nowrap">{{ c.atual }}</td>
+                            <td class="text-end text-nowrap text-muted">{{ c.anterior }}</td>
+                            <td class="text-end text-nowrap fw-semibold {% if c.var_rs_raw > 0 %}text-danger{% elif c.var_rs_raw < 0 %}text-success{% endif %}">
+                                {{ c.var_rs }}
                             </td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">(-) Impostos e Taxas (Simples, ICMS, DARF...)</td>
-                            <td class="text-end text-danger">- {{ dre.impostos_taxas }}</td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">(-) Despesas Comerciais, Vendas & Folha</td>
-                            <td class="text-end text-danger">- {{ dre.despesas_vendas }}</td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">(-) Despesas Administrativas & Operacionais</td>
-                            <td class="text-end text-danger">- {{ dre.despesas_adm }}</td>
-                        </tr>
-                        <tr class="dre-row-subtotal">
-                            <td>(=) Lucro Operacional ({{ dre.margem_operacional_pct }})</td>
-                            <td class="text-end {% if dre.lucro_operacional_positivo %}text-success{% else %}text-danger{% endif %}">
-                                {{ dre.lucro_operacional }}
+                            <td class="text-end text-nowrap fw-semibold {% if c.var_pct_raw > 0 %}text-danger{% elif c.var_pct_raw < 0 %}text-success{% endif %}">
+                                {{ c.var_pct }}
                             </td>
+                            <td class="text-end text-nowrap"><span class="badge bg-dark">{{ c.pct_faturamento }}</span></td>
+                            <td class="text-end text-nowrap text-muted">{{ c.media_3m }}</td>
+                            <td class="text-end text-nowrap text-muted">{{ c.media_6m }}</td>
+                            <td class="text-end text-nowrap fw-semibold">{{ c.acumulado_ano }}</td>
                         </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Seção 20 (Custo Fixo por Categoria Drill-down) e Seção 19 (Custos Fixos Recorrentes) -->
+        <div class="row g-3 mb-4">
+            <!-- 20. Custo Fixo por Categoria ("Por que nosso custo fixo aumentou?") -->
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <h5 class="fw-bold mb-1">🔍 Custo Fixo por Categoria ({{ custos.ind_fixo.atual }})</h5>
+                    <small class="text-muted d-block mb-3">
+                        Clique em qualquer categoria abaixo para abrir as contas e documentos que formam aquele valor ("Por que nosso custo fixo aumentou?").
+                    </small>
+
+                    <div class="accordion" id="accordionCustoFixo">
+                        {% for cf in custos.custo_fixo_por_categoria %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed py-2 px-3 small" type="button" data-bs-toggle="collapse" data-bs-target="#{{ cf.slug }}">
+                                    <div class="d-flex justify-content-between align-items-center w-100 me-3">
+                                        <span><strong>{{ cf.categoria }}</strong> <small class="text-muted">({{ cf.qtd_lancamentos }} lanç.)</small></span>
+                                        <span>
+                                            <strong>{{ cf.atual }}</strong>
+                                            <span class="badge {% if cf.var_rs_raw > 0 %}bg-danger-subtle text-danger{% else %}bg-success-subtle text-success{% endif %} border ms-1">
+                                                {{ cf.var_rs }} ({{ cf.var_pct }})
+                                            </span>
+                                        </span>
+                                    </div>
+                                </button>
+                            </h2>
+                            <div id="{{ cf.slug }}" class="accordion-collapse collapse" data-bs-parent="#accordionCustoFixo">
+                                <div class="accordion-body p-2">
+                                    <div class="table-responsive" style="max-height: 220px;">
+                                        <table class="table table-sm table-striped mb-0 small">
+                                            <thead>
+                                                <tr>
+                                                    <th>Conta</th>
+                                                    <th>Fornecedor</th>
+                                                    <th>Venc.</th>
+                                                    <th class="text-end">Valor</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for l in cf.lancamentos %}
+                                                <tr>
+                                                    <td>{{ l.conta }}</td>
+                                                    <td>{{ l.fornecedor }}</td>
+                                                    <td>{{ l.vencimento }}</td>
+                                                    <td class="text-end fw-semibold">{{ l.valor_fmt }}</td>
+                                                </tr>
+                                                {% empty %}
+                                                <tr><td colspan="4" class="text-center text-muted">Sem lançamentos no mês atual (Mês anterior: {{ cf.anterior }}).</td></tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- 19. Custos Fixos Recorrentes -->
+            <div class="col-lg-6">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <h5 class="fw-bold mb-1">🔁 Monitoramento de Custos Fixos Recorrentes</h5>
+                    <small class="text-muted d-block mb-3">
+                        Identifica reajustes em contratos, sistemas, aluguel, folha e serviços mensais recorrentes.
+                    </small>
+                    <div class="table-matrix-scroll" style="max-height: 360px;">
+                        <table class="table table-sm table-hover table-sticky mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Despesa Recorrente</th>
+                                    <th>Categoria</th>
+                                    <th class="text-end">Valor Atual</th>
+                                    <th class="text-end">Média (6M)</th>
+                                    <th class="text-end">Variação</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for rec in custos.custos_fixos_recorrentes %}
+                                <tr class="{% if rec.alerta_aumento %}table-danger{% endif %}">
+                                    <td class="fw-semibold">
+                                        {{ rec.despesa }}
+                                        {% if rec.alerta_aumento %}
+                                        <small class="d-block text-danger fw-bold">🔴 {{ rec.mensagem_alerta }}</small>
+                                        {% endif %}
+                                    </td>
+                                    <td><small class="text-muted">{{ rec.categoria }}</small></td>
+                                    <td class="text-end fw-bold text-nowrap">{{ rec.atual }}</td>
+                                    <td class="text-end text-muted text-nowrap">{{ rec.media }}</td>
+                                    <td class="text-end text-nowrap fw-semibold {% if rec.variacao_pct_raw > 0 %}text-danger{% else %}text-success{% endif %}">
+                                        {{ rec.variacao_pct }}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Seção 15 & 22: RELAÇÃO ENTRE VENDAS E CUSTOS (VISÃO COMPARATIVA MENSAL) -->
+        <div class="card card-kpi p-3 bg-white mb-4">
+            <h5 class="fw-bold mb-1">📈 Relação Mensal entre Vendas, Custos, Lucro Líquido e Margem</h5>
+            <small class="text-muted d-block mb-3">
+                Destaca meses em que os custos acompanharam proporcionalmente as vendas ou cresceram mais rápido que o faturamento.
+            </small>
+            <div class="table-responsive">
+                <table class="table table-bordered table-hover align-middle mb-0">
+                    <thead class="table-dark small text-uppercase">
                         <tr>
-                            <td class="text-muted">(-) Sócios / Pró-Labore / Retiradas</td>
-                            <td class="text-end text-danger">- {{ dre.socios_diretoria }}</td>
+                            <th>Mês</th>
+                            <th class="text-end">Vendas (Faturamento)</th>
+                            <th class="text-end">Custos Totais</th>
+                            <th class="text-end">Lucro Líquido</th>
+                            <th class="text-end">Margem Líquida</th>
+                            <th>Comportamento Vendas vs Custos</th>
                         </tr>
-                        <tr class="dre-row-total">
-                            <td>(=) LUCRO LÍQUIDO FINAL ({{ dre.margem_liquida_pct }})</td>
-                            <td class="text-end">{{ dre.lucro_liquido }}</td>
+                    </thead>
+                    <tbody>
+                        {% for ev in custos.evolucao_mensal %}
+                        <tr>
+                            <td class="fw-bold">{{ ev.mes_nome }}</td>
+                            <td class="text-end fw-semibold text-primary">{{ ev.vendas }}</td>
+                            <td class="text-end fw-semibold text-danger">{{ ev.custos }}</td>
+                            <td class="text-end fw-bold {% if ev.lucro_raw >= 0 %}text-success{% else %}text-danger{% endif %}">{{ ev.lucro }}</td>
+                            <td class="text-end fw-bold">{{ ev.margem }}</td>
+                            <td><span class="badge bg-{{ ev.classe_relacao }}-subtle text-dark border">{{ ev.diagnostico_relacao }}</span></td>
                         </tr>
+                        {% endfor %}
                     </tbody>
                 </table>
             </div>
         </div>
     </div>
 
-    <div class="col-lg-7">
-        <div class="card card-kpi p-3 bg-white h-100">
-            {% if grafico_dre %}
-                {{ grafico_dre|safe }}
-            {% else %}
-                <div class="text-center p-5 text-muted">Sem movimentação financeira para o período.</div>
+    <!-- ========================================================================= -->
+    <!-- ABA 3: RESULTADO / DRE SIMPLIFICADO (Seção 19)                            -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'dre' %}show active{% endif %}" id="pane-dre" role="tabpanel">
+        <div class="row g-3 mb-4">
+            <div class="col-lg-5">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h5 class="fw-bold mb-0">🧮 Apuração do Lucro Líquido ({{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }})</h5>
+                        <div class="btn-group btn-group-sm no-print">
+                            <a href="?aba=dre&empresa={{ empresa_filtro|urlencode }}&regime=CAIXA&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}&portador={{ portador_filtro|urlencode }}"
+                               class="btn {% if regime == 'CAIXA' %}btn-dark{% else %}btn-outline-dark{% endif %}">Regime Caixa</a>
+                            <a href="?aba=dre&empresa={{ empresa_filtro|urlencode }}&regime=COMPETENCIA&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}&portador={{ portador_filtro|urlencode }}"
+                               class="btn {% if regime == 'COMPETENCIA' %}btn-dark{% else %}btn-outline-dark{% endif %}">Por Vencimento</a>
+                        </div>
+                    </div>
+                    <small class="text-muted d-block mb-3">
+                        Faturamento comercial (NFs emitidas no mês): <strong>{{ dre.faturamento_nf }}</strong>
+                    </small>
+                    <div class="table-responsive">
+                        <table class="table table-bordered dre-table mb-0 align-middle">
+                            <tbody>
+                                <tr>
+                                    <td class="fw-bold text-success">(+) Entradas / Receitas Apuradas (CR)</td>
+                                    <td class="text-end fw-bold text-success">{{ dre.receita_base }}</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">(-) Fornecedores / Compra de Mercadoria</td>
+                                    <td class="text-end text-danger">- {{ dre.custo_mercadoria }}</td>
+                                </tr>
+                                <tr class="dre-row-subtotal">
+                                    <td>(=) Margem Bruta Financeira</td>
+                                    <td class="text-end {% if dre.margem_bruta_positiva %}text-primary{% else %}text-danger{% endif %}">
+                                        {{ dre.margem_bruta }}
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">(-) Impostos e Taxas (Simples, ICMS, DARF...)</td>
+                                    <td class="text-end text-danger">- {{ dre.impostos_taxas }}</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">(-) Despesas Comerciais, Vendas & Folha</td>
+                                    <td class="text-end text-danger">- {{ dre.despesas_vendas }}</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">(-) Despesas Administrativas & Operacionais</td>
+                                    <td class="text-end text-danger">- {{ dre.despesas_adm }}</td>
+                                </tr>
+                                <tr class="dre-row-subtotal">
+                                    <td>(=) Lucro Operacional ({{ dre.margem_operacional_pct }})</td>
+                                    <td class="text-end {% if dre.lucro_operacional_positivo %}text-success{% else %}text-danger{% endif %}">
+                                        {{ dre.lucro_operacional }}
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">(-) Sócios / Pró-Labore / Retiradas</td>
+                                    <td class="text-end text-danger">- {{ dre.socios_diretoria }}</td>
+                                </tr>
+                                <tr class="dre-row-total">
+                                    <td>(=) LUCRO LÍQUIDO FINAL ({{ dre.margem_liquida_pct }})</td>
+                                    <td class="text-end">{{ dre.lucro_liquido }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-7">
+                <div class="card card-kpi p-3 bg-white h-100">
+                    {% if grafico_dre %}
+                        {{ grafico_dre|safe }}
+                    {% else %}
+                        <div class="text-center p-5 text-muted">Sem movimentação financeira para o período.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- ABA 4: CONCILIAÇÃO BANCÁRIA POR PORTADOR / FORMA DE PAGAMENTO (Seção 19)  -->
+    <!-- ========================================================================= -->
+    <div class="tab-pane fade {% if aba_ativa == 'conciliacao' %}show active{% endif %}" id="pane-conciliacao" role="tabpanel">
+        <div class="card card-kpi p-4 bg-white mb-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                <div>
+                    <h5 class="fw-bold mb-0">🏦 Conciliação Bancária por Portador / Forma de Pagamento</h5>
+                    <small class="text-muted">Distribuição percentual de entradas e saídas em cada portador/banco no período.</small>
+                </div>
+                {% if portador_filtro != 'TODOS' %}
+                <a href="{% url 'dashboard_financeiro' %}?aba=conciliacao&empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador=TODOS&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
+                   class="btn btn-outline-secondary btn-sm no-print">
+                    Limpar Filtro de Portador ({{ portador_filtro }})
+                </a>
+                {% endif %}
+            </div>
+
+            {% if resumo_portadores %}
+            <div class="d-flex flex-wrap gap-2 mb-3 no-print">
+                {% for rp in resumo_portadores %}
+                <a href="{% url 'dashboard_financeiro' %}?aba=conciliacao&empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador={{ rp.portador|urlencode }}&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
+                   class="btn btn-sm {% if portador_filtro == rp.portador %}btn-primary fw-bold{% else %}btn-outline-secondary{% endif %} d-flex align-items-center gap-1">
+                    🏦 {{ rp.portador }}
+                    <span class="badge bg-success-subtle text-success border">{{ rp.pct_entradas|floatformat:1 }}% Ent.</span>
+                    <span class="badge bg-danger-subtle text-danger border">{{ rp.pct_saidas|floatformat:1 }}% Saí.</span>
+                </a>
+                {% endfor %}
+            </div>
             {% endif %}
+
+            <div class="row g-3">
+                <div class="col-lg-6">
+                    <div class="border rounded p-2 h-100 bg-light-subtle">
+                        {% if grafico_pizza_entradas %}
+                            {{ grafico_pizza_entradas|safe }}
+                        {% else %}
+                            <div class="text-center p-5 text-muted">Sem entradas registradas para exibir por portador.</div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="border rounded p-2 h-100 bg-light-subtle">
+                        {% if grafico_pizza_saidas %}
+                            {{ grafico_pizza_saidas|safe }}
+                        {% else %}
+                            <div class="text-center p-5 text-muted">Sem saídas registradas para exibir por portador.</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabelas Operacionais de Conciliação Bancária com Checklist -->
+        <div class="card card-kpi p-4 bg-white mb-5">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                <div>
+                    <h5 class="fw-bold mb-0">📑 Conferência de Extrato Bancário (Checklist de Conciliação)</h5>
+                    <small class="text-muted">Marque a coluna <strong>✓</strong> conforme conferir cada baixa com o extrato bancário.</small>
+                </div>
+                <div class="d-flex align-items-center gap-2 no-print">
+                    <span id="resumoConciliacaoManual" class="badge bg-success-subtle text-success border px-3 py-2">
+                        0 marcados na tela (R$ 0,00)
+                    </span>
+                    <button type="button" id="btnLimparConciliados" class="btn btn-outline-secondary btn-sm">
+                        Limpar Marcações
+                    </button>
+                </div>
+            </div>
+
+            <ul class="nav nav-tabs mb-3" id="finTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active fw-bold" id="cr-tab" data-bs-toggle="tab" data-bs-target="#cr-pane" type="button" role="tab">
+                        🟢 Contas a Receber / Entradas ({{ tabela_cr|length }})
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link fw-bold" id="cp-tab" data-bs-toggle="tab" data-bs-target="#cp-pane" type="button" role="tab">
+                        🔴 Contas a Pagar / Saídas ({{ tabela_cp|length }})
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="finTabsContent">
+                <div class="tab-pane fade show active" id="cr-pane" role="tabpanel">
+                    <table id="tabelaCR" class="table table-hover align-middle w-100 table-sticky">
+                        <thead>
+                            <tr>
+                                <th class="text-center no-print">✓</th>
+                                <th>Doc / Duplicata</th>
+                                <th>Empresa</th>
+                                <th>Cliente</th>
+                                <th>Portador / Banco</th>
+                                <th>Nosso Número</th>
+                                <th>Vencimento</th>
+                                <th>Data Receb.</th>
+                                <th>Status</th>
+                                <th class="text-end">Valor Título (R$)</th>
+                                <th class="text-end">Valor Recebido (R$)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for cr in tabela_cr %}
+                            <tr data-conc-id="CR-{{ cr.id }}">
+                                <td class="text-center no-print">
+                                    <input type="checkbox" class="form-check-input chk-conciliar"
+                                           data-id="CR-{{ cr.id }}"
+                                           data-valor="{{ cr.valor_recebido|default:cr.valor_total|stringformat:'.2f' }}">
+                                </td>
+                                <td class="fw-bold text-nowrap">{{ cr.documento }} <small class="text-muted">({{ cr.parcela }})</small></td>
+                                <td class="text-nowrap"><small class="text-muted">{{ cr.empresa }}</small></td>
+                                <td class="fw-semibold">{{ cr.cliente_nome }}</td>
+                                <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ cr.portador }}</span></td>
+                                <td class="text-nowrap small text-muted">{{ cr.nosso_numero }}</td>
+                                <td class="text-nowrap" data-order="{{ cr.data_venc_iso }}">{{ cr.data_venc_str }}</td>
+                                <td class="text-nowrap fw-semibold" data-order="{{ cr.data_rec_iso }}">{{ cr.data_rec_str }}</td>
+                                <td class="text-nowrap">
+                                    {% if cr.status == 'RECEBIDO' %}
+                                        <span class="badge bg-success">Recebido</span>
+                                    {% elif cr.status == 'VENCIDO' %}
+                                        <span class="badge bg-danger">Vencido</span>
+                                    {% else %}
+                                        <span class="badge bg-warning text-dark">A Vencer</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-end text-nowrap" data-order="{{ cr.valor_total|stringformat:'.2f' }}">R$ {{ cr.valor_total|floatformat:2 }}</td>
+                                <td class="text-end fw-bold text-success text-nowrap" data-order="{{ cr.valor_recebido|stringformat:'.2f' }}">R$ {{ cr.valor_recebido|floatformat:2 }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="tab-pane fade" id="cp-pane" role="tabpanel">
+                    <table id="tabelaCP" class="table table-hover align-middle w-100 table-sticky">
+                        <thead>
+                            <tr>
+                                <th class="text-center no-print">✓</th>
+                                <th>Doc / Duplicata</th>
+                                <th>Empresa</th>
+                                <th>Fornecedor / Credor</th>
+                                <th>Categoria / Grupo Conta</th>
+                                <th>Portador</th>
+                                <th>Vencimento</th>
+                                <th>Data Pagto.</th>
+                                <th>Status</th>
+                                <th class="text-end">Valor Título (R$)</th>
+                                <th class="text-end">Valor Pago (R$)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for cp in tabela_cp %}
+                            <tr data-conc-id="CP-{{ cp.id }}">
+                                <td class="text-center no-print">
+                                    <input type="checkbox" class="form-check-input chk-conciliar"
+                                           data-id="CP-{{ cp.id }}"
+                                           data-valor="-{{ cp.valor_pago|default:cp.valor_total|stringformat:'.2f' }}">
+                                </td>
+                                <td class="fw-bold text-nowrap">{{ cp.documento }} <small class="text-muted">({{ cp.parcela }})</small></td>
+                                <td class="text-nowrap"><small class="text-muted">{{ cp.empresa }}</small></td>
+                                <td class="fw-semibold">{{ cp.fornecedor_nome }}</td>
+                                <td class="small text-muted">{{ cp.grupo_conta }}</td>
+                                <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ cp.portador }}</span></td>
+                                <td class="text-nowrap" data-order="{{ cp.data_venc_iso }}">{{ cp.data_venc_str }}</td>
+                                <td class="text-nowrap fw-semibold" data-order="{{ cp.data_pag_iso }}">{{ cp.data_pag_str }}</td>
+                                <td class="text-nowrap">
+                                    {% if cp.status == 'PAGO' %}
+                                        <span class="badge bg-success">Pago</span>
+                                    {% elif cp.status == 'VENCIDO' %}
+                                        <span class="badge bg-danger">Vencido</span>
+                                    {% else %}
+                                        <span class="badge bg-warning text-dark">A Vencer</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-end text-nowrap" data-order="{{ cp.valor_total|stringformat:'.2f' }}">R$ {{ cp.valor_total|floatformat:2 }}</td>
+                                <td class="text-end fw-bold text-danger text-nowrap" data-order="{{ cp.valor_pago|stringformat:'.2f' }}">R$ {{ cp.valor_pago|floatformat:2 }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 </div>
 
-<!-- Seção 2: Conciliação Bancária por Portador / Forma de Pagamento (Gráficos de Pizza) -->
-<div class="card card-kpi p-4 bg-white mb-4">
-    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
-        <div>
-            <h5 class="fw-bold mb-0">🏦 Conciliação Bancária por Portador / Forma de Pagamento</h5>
-            <small class="text-muted">Distribuição percentual de entradas e saídas em cada portador/forma de pagamento no período.</small>
-        </div>
-        {% if portador_filtro != 'TODOS' %}
-        <a href="{% url 'dashboard_financeiro' %}?empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador=TODOS&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
-           class="btn btn-outline-secondary btn-sm no-print">
-            Limpar Filtro de Portador ({{ portador_filtro }})
-        </a>
-        {% endif %}
-    </div>
-
-    {% if resumo_portadores %}
-    <div class="d-flex flex-wrap gap-2 mb-3 no-print">
-        {% for rp in resumo_portadores %}
-        <a href="{% url 'dashboard_financeiro' %}?empresa={{ empresa_filtro|urlencode }}&regime={{ regime }}&portador={{ rp.portador|urlencode }}&mes={{ mes_selecionado }}&ano={{ ano_selecionado }}"
-           class="btn btn-sm {% if portador_filtro == rp.portador %}btn-primary fw-bold{% else %}btn-outline-secondary{% endif %} d-flex align-items-center gap-1"
-           title="Filtrar lançamentos por {{ rp.portador }}">
-            🏦 {{ rp.portador }}
-            <span class="badge bg-success-subtle text-success border">{{ rp.pct_entradas|floatformat:1 }}% Ent.</span>
-            <span class="badge bg-danger-subtle text-danger border">{{ rp.pct_saidas|floatformat:1 }}% Saí.</span>
-        </a>
-        {% endfor %}
-    </div>
-    {% endif %}
-
-    <div class="row g-3">
-        <div class="col-lg-6">
-            <div class="border rounded p-2 h-100 bg-light-subtle">
-                {% if grafico_pizza_entradas %}
-                    {{ grafico_pizza_entradas|safe }}
-                {% else %}
-                    <div class="text-center p-5 text-muted">Sem entradas registradas para exibir por forma de pagamento.</div>
-                {% endif %}
+<!-- ========================================================================= -->
+<!-- MODAL 1: ATUALIZAR SALDO BANCÁRIO MANUAL (Seção 2 e Seção 5)              -->
+<!-- ========================================================================= -->
+<div class="modal fade" id="modalSaldoBancario" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="post" class="modal-content">
+            {% csrf_token %}
+            <input type="hidden" name="acao_fin" value="atualizar_saldo">
+            <input type="hidden" name="empresa" value="{{ empresa_filtro }}">
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <div class="modal-header bg-dark text-white">
+                <h5 class="modal-title fw-bold">🏦 Informar Saldo Bancário Manual</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
-        </div>
-        <div class="col-lg-6">
-            <div class="border rounded p-2 h-100 bg-light-subtle">
-                {% if grafico_pizza_saidas %}
-                    {{ grafico_pizza_saidas|safe }}
-                {% else %}
-                    <div class="text-center p-5 text-muted">Sem saídas registradas para exibir por forma de pagamento.</div>
-                {% endif %}
+            <div class="modal-body">
+                <div class="alert alert-secondary small">
+                    Como o sistema não possui integração bancária automática, informe o <strong>saldo bancário real atual</strong>.
+                    Data, hora e usuário responsável são registrados automaticamente.
+                </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Saldo Bancário Atual (R$) — Escopo: {{ empresa_filtro }}</label>
+                    <input type="text" name="saldo_bancario_atual" class="form-control form-control-lg fw-bold"
+                           value="{{ fluxo.topo_liquidez.saldo_bancario_informado_raw|floatformat:2 }}" required>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label fw-bold">Reserva Mínima Operacional (R$)</label>
+                    <input type="text" name="reserva_minima" class="form-control"
+                           value="{{ fluxo.topo_liquidez.reserva_minima_raw|floatformat:2 }}">
+                    <small class="text-muted">Padrão AMM: R$ 30.000,00</small>
+                </div>
+                <hr>
+                <small class="text-muted">
+                    Última atualização registrada: <strong>{{ fluxo.topo_liquidez.data_atualizacao_saldo }}</strong>
+                    por <strong>{{ fluxo.topo_liquidez.usuario_atualizacao_saldo }}</strong>.
+                </small>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="submit" class="btn btn-primary fw-bold">💾 Salvar Saldo Bancário</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- MODAL 2: LISTA DE COBRANÇA DE INADIMPLÊNCIA (Seção 14)                    -->
+<!-- ========================================================================= -->
+<div class="modal fade" id="modalListaCobranca" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title fw-bold">
+                    🟠 Lista de Cobrança — Contas Vencidas ({{ fluxo.resumo_inadimplencia.total_em_atraso }} em {{ fluxo.resumo_inadimplencia.qtd_em_atraso }} títulos)
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <table id="tabelaCobrancaModal" class="table table-sm table-hover table-bordered align-middle w-100">
+                    <thead class="table-dark small">
+                        <tr>
+                            <th>Cliente</th>
+                            <th class="text-end">Valor Vencido</th>
+                            <th>Vencimento</th>
+                            <th class="text-center">Dias em Atraso</th>
+                            <th>Vendedor</th>
+                            <th>Empresa</th>
+                            <th>Documento</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for cob in fluxo.resumo_inadimplencia.lista_cobranca %}
+                        <tr>
+                            <td class="fw-bold">{{ cob.cliente_nome }} <small class="text-muted d-block">{{ cob.cliente_documento }}</small></td>
+                            <td class="text-end fw-bold text-danger text-nowrap" data-order="{{ cob.valor_aberto|stringformat:'.2f' }}">{{ cob.valor_aberto_fmt }}</td>
+                            <td class="text-nowrap" data-order="{{ cob.data_venc_iso }}">{{ cob.data_venc_str }}</td>
+                            <td class="text-center" data-order="{{ cob.dias_atraso }}">
+                                <span class="badge {% if cob.dias_atraso > 30 %}bg-danger{% else %}bg-warning text-dark{% endif %}">
+                                    {{ cob.dias_atraso }} dias
+                                </span>
+                            </td>
+                            <td>{{ cob.vendedor_nome }}</td>
+                            <td><small>{{ cob.empresa }}</small></td>
+                            <td class="text-nowrap">{{ cob.documento }} ({{ cob.parcela }})</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
             </div>
         </div>
     </div>
 </div>
 
-<!-- Seção 3: Tabelas de Lançamentos para Conciliação Bancária (CR e CP) -->
-<div class="card card-kpi p-4 bg-white mb-5">
-    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
-        <div>
-            <h5 class="fw-bold mb-0">📑 Lançamentos do Período para Conciliação Bancária</h5>
-            <small class="text-muted">
-                Marque a coluna <strong>✓ Conciliado</strong> conforme conferir cada baixa com o extrato bancário.
-            </small>
-        </div>
-        <div class="d-flex align-items-center gap-2 no-print">
-            <span id="resumoConciliacaoManual" class="badge bg-success-subtle text-success border px-3 py-2">
-                0 marcados na tela (R$ 0,00)
-            </span>
-            <button type="button" id="btnLimparConciliados" class="btn btn-outline-secondary btn-sm">
-                Limpar Marcações
-            </button>
-        </div>
-    </div>
+<!-- ========================================================================= -->
+<!-- MODAL 3: CONFIGURAÇÃO DE CLASSIFICAÇÃO DE CONTAS DE CUSTO (Seção 2 e 10)  -->
+<!-- ========================================================================= -->
+<div class="modal fade" id="modalClassificacaoCustos" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <form method="post" class="modal-content">
+            {% csrf_token %}
+            <input type="hidden" name="acao_fin" value="salvar_classificacao_custo">
+            <input type="hidden" name="empresa" value="{{ empresa_filtro }}">
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <div class="modal-header bg-dark text-white">
+                <h5 class="modal-title fw-bold">⚙️ Classificação Persistente de Custos (Conta → Categoria → Subcategoria → Tipo)</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3 p-3 bg-light border rounded">
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold mb-1">Gatilho de Alerta Inteligente — Variação Mínima (%):</label>
+                        <input type="text" name="alerta_aumento_pct" class="form-control form-control-sm" value="{{ custos.parametros_alerta.pct }}">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold mb-1">Gatilho de Alerta Inteligente — Aumento Absoluto Mínimo (R$):</label>
+                        <input type="text" name="alerta_aumento_valor" class="form-control form-control-sm" value="{{ custos.parametros_alerta.valor }}">
+                    </div>
+                </div>
 
-    <!-- Abas CR / CP -->
-    <ul class="nav nav-tabs mb-3" id="finTabs" role="tablist">
-        <li class="nav-item" role="presentation">
-            <button class="nav-link active fw-bold" id="cr-tab" data-bs-toggle="tab" data-bs-target="#cr-pane" type="button" role="tab">
-                🟢 Contas a Receber / Entradas ({{ tabela_cr|length }})
-            </button>
-        </li>
-        <li class="nav-item" role="presentation">
-            <button class="nav-link fw-bold" id="cp-tab" data-bs-toggle="tab" data-bs-target="#cp-pane" type="button" role="tab">
-                🔴 Contas a Pagar / Saídas ({{ tabela_cp|length }})
-            </button>
-        </li>
-    </ul>
-
-    <div class="tab-content" id="finTabsContent">
-        <!-- Aba 1: Contas a Receber -->
-        <div class="tab-pane fade show active" id="cr-pane" role="tabpanel">
-            <table id="tabelaCR" class="table table-hover align-middle w-100 table-sticky">
-                <thead>
-                    <tr>
-                        <th class="text-center no-print">✓</th>
-                        <th>Doc / Duplicata</th>
-                        <th>Empresa</th>
-                        <th>Cliente</th>
-                        <th>Portador / Banco</th>
-                        <th>Nosso Número</th>
-                        <th>Vencimento</th>
-                        <th>Data Receb.</th>
-                        <th>Status</th>
-                        <th class="text-end">Valor Título (R$)</th>
-                        <th class="text-end">Valor Recebido (R$)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for cr in tabela_cr %}
-                    <tr data-conc-id="CR-{{ cr.id }}">
-                        <td class="text-center no-print">
-                            <input type="checkbox" class="form-check-input chk-conciliar"
-                                   data-id="CR-{{ cr.id }}"
-                                   data-valor="{{ cr.valor_recebido|default:cr.valor_total|stringformat:'.2f' }}">
-                        </td>
-                        <td class="fw-bold text-nowrap">{{ cr.documento }} <small class="text-muted">({{ cr.parcela }})</small></td>
-                        <td class="text-nowrap"><small class="text-muted">{{ cr.empresa }}</small></td>
-                        <td class="fw-semibold">{{ cr.cliente_nome }}</td>
-                        <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ cr.portador }}</span></td>
-                        <td class="text-nowrap small text-muted">{{ cr.nosso_numero }}</td>
-                        <td class="text-nowrap" data-order="{{ cr.data_venc_iso }}">{{ cr.data_venc_str }}</td>
-                        <td class="text-nowrap fw-semibold" data-order="{{ cr.data_rec_iso }}">{{ cr.data_rec_str }}</td>
-                        <td class="text-nowrap">
-                            {% if cr.status == 'RECEBIDO' %}
-                                <span class="badge bg-success">Recebido</span>
-                            {% elif cr.status == 'VENCIDO' %}
-                                <span class="badge bg-danger">Vencido</span>
-                            {% else %}
-                                <span class="badge bg-warning text-dark">A Vencer</span>
-                            {% endif %}
-                        </td>
-                        <td class="text-end text-nowrap" data-order="{{ cr.valor_total|stringformat:'.2f' }}">
-                            R$ {{ cr.valor_total|floatformat:2 }}
-                        </td>
-                        <td class="text-end fw-bold text-success text-nowrap" data-order="{{ cr.valor_recebido|stringformat:'.2f' }}">
-                            R$ {{ cr.valor_recebido|floatformat:2 }}
-                        </td>
-                    </tr>
+                <datalist id="listaCategoriasGerenciais">
+                    {% for cat_sug in custos.categorias_sugeridas %}
+                    <option value="{{ cat_sug }}">
                     {% endfor %}
-                </tbody>
-            </table>
-        </div>
+                </datalist>
 
-        <!-- Aba 2: Contas a Pagar -->
-        <div class="tab-pane fade" id="cp-pane" role="tabpanel">
-            <table id="tabelaCP" class="table table-hover align-middle w-100 table-sticky">
-                <thead>
-                    <tr>
-                        <th class="text-center no-print">✓</th>
-                        <th>Doc / Duplicata</th>
-                        <th>Empresa</th>
-                        <th>Fornecedor / Credor</th>
-                        <th>Categoria / Grupo Conta</th>
-                        <th>Portador</th>
-                        <th>Vencimento</th>
-                        <th>Data Pagto.</th>
-                        <th>Status</th>
-                        <th class="text-end">Valor Título (R$)</th>
-                        <th class="text-end">Valor Pago (R$)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for cp in tabela_cp %}
-                    <tr data-conc-id="CP-{{ cp.id }}">
-                        <td class="text-center no-print">
-                            <input type="checkbox" class="form-check-input chk-conciliar"
-                                   data-id="CP-{{ cp.id }}"
-                                   data-valor="-{{ cp.valor_pago|default:cp.valor_total|stringformat:'.2f' }}">
-                        </td>
-                        <td class="fw-bold text-nowrap">{{ cp.documento }} <small class="text-muted">({{ cp.parcela }})</small></td>
-                        <td class="text-nowrap"><small class="text-muted">{{ cp.empresa }}</small></td>
-                        <td class="fw-semibold">{{ cp.fornecedor_nome }}</td>
-                        <td class="small text-muted">{{ cp.grupo_conta }}</td>
-                        <td class="text-nowrap"><span class="badge bg-light text-dark border">{{ cp.portador }}</span></td>
-                        <td class="text-nowrap" data-order="{{ cp.data_venc_iso }}">{{ cp.data_venc_str }}</td>
-                        <td class="text-nowrap fw-semibold" data-order="{{ cp.data_pag_iso }}">{{ cp.data_pag_str }}</td>
-                        <td class="text-nowrap">
-                            {% if cp.status == 'PAGO' %}
-                                <span class="badge bg-success">Pago</span>
-                            {% elif cp.status == 'VENCIDO' %}
-                                <span class="badge bg-danger">Vencido</span>
-                            {% else %}
-                                <span class="badge bg-warning text-dark">A Vencer</span>
-                            {% endif %}
-                        </td>
-                        <td class="text-end text-nowrap" data-order="{{ cp.valor_total|stringformat:'.2f' }}">
-                            R$ {{ cp.valor_total|floatformat:2 }}
-                        </td>
-                        <td class="text-end fw-bold text-danger text-nowrap" data-order="{{ cp.valor_pago|stringformat:'.2f' }}">
-                            R$ {{ cp.valor_pago|floatformat:2 }}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+                <div class="table-responsive" style="max-height: 55vh;">
+                    <table class="table table-sm table-bordered align-middle">
+                        <thead class="table-dark small">
+                            <tr>
+                                <th>Conta ERP</th>
+                                <th>Categoria Gerencial</th>
+                                <th>Subcategoria</th>
+                                <th>Tipo de Custo (A a E)</th>
+                                <th class="text-center">Fixo Recorrente?</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for cc in custos.contas_classificadas %}
+                            <tr>
+                                <td class="fw-bold small">
+                                    <input type="hidden" name="conta_id" value="{{ cc.id }}">
+                                    {{ cc.conta_chave }}
+                                    {% if cc.editado_manualmente %}
+                                    <span class="badge bg-info-subtle text-dark border">Editado</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <input type="text" name="categoria_{{ cc.id }}" list="listaCategoriasGerenciais"
+                                           class="form-control form-control-sm" value="{{ cc.categoria }}">
+                                </td>
+                                <td>
+                                    <input type="text" name="subcategoria_{{ cc.id }}"
+                                           class="form-control form-control-sm" value="{{ cc.subcategoria }}">
+                                </td>
+                                <td>
+                                    <select name="tipo_custo_{{ cc.id }}" class="form-select form-select-sm">
+                                        {% for cod_t, nome_t in custos.tipos_custo_choices %}
+                                        <option value="{{ cod_t }}" {% if cc.tipo_custo == cod_t %}selected{% endif %}>{{ nome_t }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </td>
+                                <td class="text-center">
+                                    <input type="checkbox" class="form-check-input" name="recorrente_{{ cc.id }}" value="1"
+                                           {% if cc.recorrente %}checked{% endif %}>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="submit" class="btn btn-primary fw-bold">💾 Salvar Classificações e Parâmetros</button>
+            </div>
+        </form>
     </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
+    function fmtMoedaBR(v) {
+        return (v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }
+
+    function executarSimulacaoCompraJS() {
+        const sel = document.getElementById('simMesSelect');
+        const inp = document.getElementById('simValorInput');
+        const box = document.getElementById('boxResultadoSimulacao');
+        if (!sel || !inp || !box) return;
+
+        const opt = sel.options[sel.selectedIndex];
+        if (!opt) return;
+
+        const valorCompra = parseFloat(inp.value) || 0;
+        const mesNome = opt.getAttribute('data-mes-nome') || '';
+        const saldoAntes = parseFloat(opt.getAttribute('data-saldo-proj')) || 0;
+        const reserva = parseFloat(opt.getAttribute('data-reserva')) || 30000;
+        const disponivelAntes = saldoAntes - reserva;
+
+        if (valorCompra <= 0) {
+            box.className = 'p-3 rounded border bg-light';
+            box.innerHTML = `
+                <div class="small">
+                    <strong>Mês selecionado (${mesNome}):</strong><br>
+                    Saldo projetado atual: <strong>${fmtMoedaBR(saldoAntes)}</strong><br>
+                    Reserva mínima: <strong>${fmtMoedaBR(reserva)}</strong><br>
+                    Disponível p/ compromissos no mês: <strong class="${disponivelAntes >= 0 ? 'text-success' : 'text-danger'}">${fmtMoedaBR(disponivelAntes)}</strong>
+                </div>
+            `;
+            return;
+        }
+
+        const saldoApos = saldoAntes - valorCompra;
+        const abaixo = saldoApos < reserva;
+        const deficit = Math.max(reserva - saldoApos, 0);
+        const folga = Math.max(saldoApos - reserva, 0);
+
+        if (abaixo) {
+            box.className = 'p-3 rounded border border-danger bg-danger-subtle text-danger-emphasis';
+            box.innerHTML = `
+                <div class="fw-bold mb-1">🔴 ATENÇÃO: este compromisso levará o caixa projetado de ${mesNome} abaixo da reserva mínima.</div>
+                <div class="small">
+                    Saldo antes da compra: <strong>${fmtMoedaBR(saldoAntes)}</strong><br>
+                    Nova obrigação: <strong class="text-danger">-${fmtMoedaBR(valorCompra)}</strong><br>
+                    Saldo após compromisso: <strong class="text-danger">${fmtMoedaBR(saldoApos)}</strong><br>
+                    Reserva mínima: <strong>${fmtMoedaBR(reserva)}</strong><br>
+                    Déficit: <strong class="text-danger">${fmtMoedaBR(deficit)}</strong>
+                </div>
+            `;
+        } else {
+            box.className = 'p-3 rounded border border-success bg-success-subtle text-success-emphasis';
+            box.innerHTML = `
+                <div class="fw-bold mb-1">🟢 Compromisso viável em ${mesNome}: o caixa projetado permanecerá acima da reserva mínima.</div>
+                <div class="small">
+                    Saldo antes da compra: <strong>${fmtMoedaBR(saldoAntes)}</strong><br>
+                    Nova obrigação: <strong>-${fmtMoedaBR(valorCompra)}</strong><br>
+                    Saldo após compromisso: <strong class="text-success">${fmtMoedaBR(saldoApos)}</strong><br>
+                    Reserva mínima: <strong>${fmtMoedaBR(reserva)}</strong><br>
+                    Disponível restante: <strong class="text-success">${fmtMoedaBR(folga)}</strong>
+                </div>
+            `;
+        }
+    }
+
     $(document).ready(function() {
         const dtConfig = {
             language: {
@@ -487,8 +1761,22 @@
             order: []
         };
 
+        $('#tabelaCRMes').DataTable(dtConfig);
+        $('#tabelaCPMes').DataTable(dtConfig);
         $('#tabelaCR').DataTable(dtConfig);
         $('#tabelaCP').DataTable(dtConfig);
+        $('#tabelaCobrancaModal').DataTable({
+            language: { url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json' },
+            pageLength: 15,
+            order: [[1, 'desc']]
+        });
+
+        executarSimulacaoCompraJS();
+
+        // Redimensiona gráficos Plotly ao alternar abas Bootstrap
+        $('button[data-bs-toggle="pill"], button[data-bs-toggle="tab"]').on('shown.bs.tab', function () {
+            window.dispatchEvent(new Event('resize'));
+        });
 
         // Conciliação bancária assistida no navegador (persiste no localStorage)
         const STORAGE_KEY = 'amm_conciliados_{{ ano_selecionado }}_{{ mes_selecionado }}';

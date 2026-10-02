@@ -302,6 +302,44 @@ class Orcamento(models.Model):
         return f"Orç. {self.numero_orcamento} ({self.empresa}) - {self.cliente_nome}: R$ {self.valor_total:,.2f}"
 
 
+class ItemOrcamento(models.Model):
+    id_item_erp = models.CharField(max_length=60, unique=True, db_index=True, verbose_name="ID Item (Empresa-T004_Id)")
+    empresa = models.CharField(max_length=100, db_index=True, verbose_name="Empresa")
+    numero_orcamento = models.CharField(max_length=50, db_index=True, verbose_name="Número do Orçamento (T003_Id)")
+    orcamento = models.ForeignKey(
+        Orcamento,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="itens",
+        verbose_name="Orçamento Vinculado",
+    )
+    codigo_produto = models.CharField(max_length=50, db_index=True, verbose_name="Código do Produto (SKU)")
+    descricao_produto = models.CharField(max_length=255, verbose_name="Descrição do Produto")
+    marca = models.CharField(max_length=100, blank=True, null=True, verbose_name="Marca")
+    unidade = models.CharField(max_length=20, blank=True, null=True, verbose_name="Unidade")
+    quantidade = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Quantidade")
+    valor_unitario = models.DecimalField(max_digits=12, decimal_places=4, default=0.00, verbose_name="Valor Unitário (R$)")
+    valor_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Valor Total (R$)")
+    data_emissao = models.DateField(blank=True, null=True, db_index=True, verbose_name="Data de Emissão")
+    cliente_nome = models.CharField(max_length=255, blank=True, null=True, verbose_name="Cliente")
+    vendedor_nome = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Vendedor")
+    dados_brutos = models.JSONField(blank=True, null=True, verbose_name="Payload Bruto")
+    data_sincronizacao = models.DateTimeField(auto_now=True, verbose_name="Última Sincronização")
+
+    class Meta:
+        verbose_name = "Item de Orçamento"
+        verbose_name_plural = "Itens de Orçamento"
+        ordering = ["-data_emissao", "-numero_orcamento"]
+        indexes = [
+            models.Index(fields=["data_emissao", "codigo_produto"]),
+            models.Index(fields=["numero_orcamento", "empresa"]),
+        ]
+
+    def __str__(self):
+        return f"Item Orç. {self.numero_orcamento} ({self.empresa}): {self.codigo_produto} - {self.descricao_produto} ({self.quantidade} un)"
+
+
 class LogSincronizacao(models.Model):
     TIPO_CHOICES = [
         ("NOTAS_HARDNESS", "Notas Fiscais (Hardness)"),
@@ -341,4 +379,138 @@ class LogSincronizacao(models.Model):
 
     def __str__(self):
         return f"[{self.get_status_display()}] {self.get_tipo_display()} ({self.iniciado_em:%d/%m/%Y %H:%M})"
+
+
+class ConfiguracaoFinanceira(models.Model):
+    """
+    Armazena o saldo bancário manual informado pela gestão (sem integração bancária),
+    a reserva mínima operacional (padrão R$ 30.000,00) e parâmetros de alertas de custos.
+    """
+    empresa = models.CharField(
+        max_length=100,
+        unique=True,
+        default="TODAS",
+        db_index=True,
+        verbose_name="Empresa / Escopo",
+    )
+    saldo_bancario_atual = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=0.00,
+        verbose_name="Saldo Bancário Atual Informado (R$)",
+    )
+    reserva_minima = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=30000.00,
+        verbose_name="Reserva Mínima Operacional (R$)",
+    )
+    alerta_aumento_pct = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=10.00,
+        verbose_name="Alerta Aumento Relevante (%)",
+    )
+    alerta_aumento_valor = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=500.00,
+        verbose_name="Alerta Aumento Relevante Mínimo (R$)",
+    )
+    usuario_atualizacao = models.CharField(
+        max_length=100,
+        default="Sistema",
+        verbose_name="Usuário Responsável pela Atualização",
+    )
+    data_atualizacao = models.DateTimeField(
+        auto_now=True,
+        verbose_name="Data e Hora da Atualização",
+    )
+
+    class Meta:
+        verbose_name = "Configuração Financeira / Saldo Bancário"
+        verbose_name_plural = "Configurações Financeiras / Saldos Bancários"
+        ordering = ["empresa"]
+
+    def __str__(self):
+        return f"Saldo ({self.empresa}): R$ {self.saldo_bancario_atual:,.2f} (Reserva: R$ {self.reserva_minima:,.2f})"
+
+
+class ClassificacaoCusto(models.Model):
+    """
+    Mapeamento persistente e customizável de cada Conta de Despesa do ERP:
+    Conta -> Categoria -> Subcategoria -> Tipo de Custo (A a E) + Recorrente.
+    """
+    TIPO_CUSTO_CHOICES = [
+        ("CMV", "A. Custo de Mercadorias / CMV"),
+        ("FIXO", "B. Custos Fixos"),
+        ("VARIAVEL", "C. Custos Variáveis"),
+        ("FINANCEIRO", "D. Despesas Financeiras"),
+        ("EXTRAORDINARIO", "E. Despesas Extraordinárias"),
+    ]
+
+    conta_chave = models.CharField(
+        max_length=200,
+        unique=True,
+        db_index=True,
+        verbose_name="Conta (Subconta / Grupo ERP)",
+    )
+    grupo_conta_erp = models.CharField(
+        max_length=150,
+        blank=True,
+        null=True,
+        verbose_name="Grupo de Conta ERP",
+    )
+    centro_custo_erp = models.CharField(
+        max_length=150,
+        blank=True,
+        null=True,
+        verbose_name="Centro de Custo ERP",
+    )
+    categoria = models.CharField(
+        max_length=100,
+        db_index=True,
+        verbose_name="Categoria Gerencial",
+    )
+    subcategoria = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        verbose_name="Subcategoria",
+    )
+    tipo_custo = models.CharField(
+        max_length=30,
+        choices=TIPO_CUSTO_CHOICES,
+        default="FIXO",
+        db_index=True,
+        verbose_name="Tipo de Custo",
+    )
+    recorrente = models.BooleanField(
+        default=False,
+        verbose_name="Custo Fixo Recorrente",
+    )
+    editado_manualmente = models.BooleanField(
+        default=False,
+        verbose_name="Editado pela Gestão",
+    )
+    atualizado_por = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        default="Sistema",
+        verbose_name="Atualizado por",
+    )
+    data_atualizacao = models.DateTimeField(
+        auto_now=True,
+        verbose_name="Última Atualização",
+    )
+
+    class Meta:
+        verbose_name = "Classificação de Custo"
+        verbose_name_plural = "Classificações de Custos"
+        ordering = ["tipo_custo", "categoria", "conta_chave"]
+
+    def __str__(self):
+        return f"{self.conta_chave} -> {self.categoria} / {self.subcategoria or '-'} ({self.get_tipo_custo_display()})"
+
 

@@ -17,12 +17,15 @@ from integrations.hardness import HardnessAPI
 from .models import (
     ContaPagar,
     ContaReceber,
+    ItemOrcamento,
     LogSincronizacao,
     MetaVendedor,
     NotaFiscal,
     Orcamento,
     Vendedor,
 )
+from sales.dashboard_services import eh_motivo_desconsiderado
+from inventory.models import ItemVenda
 
 
 def print(*args, **kwargs):
@@ -278,7 +281,7 @@ def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
             print(f"⚠️ Pulando {nome_empresa} devido a erro na troca de sessão.")
             continue
 
-        filtro_ok = api.filtrar(data_inicio=data_inicio, data_fim=data_fim, CFOP="VENDA", cancelada="N")
+        filtro_ok = api.filtrar(data_inicio=data_inicio, data_fim=data_fim, CFOP="VENDA", cancelada="")
         if not filtro_ok:
             print(f"⚠️ Não foi possível aplicar o filtro em {nome_empresa}.")
             continue
@@ -304,8 +307,12 @@ def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
             if not numero_nf or numero_nf == "ID-":
                 continue
 
-            cancelada = str(item.get("T007_Flag_Cancelada", "N")).strip()
-            status = "CANCELADA" if cancelada == "S" else str(item.get("T005_Status", "FATURADA"))
+            cancelada_flag = str(item.get("T007_Flag_Cancelada", "N")).strip().upper()
+            status_raw = str(item.get("T005_Status", "FATURADA")).strip()
+            if cancelada_flag == "S" or "CANCEL" in status_raw.upper():
+                status = "CANCELADA"
+            else:
+                status = status_raw
 
             registros_preparados[numero_nf] = {
                 "empresa": nome_empresa,
@@ -364,6 +371,27 @@ def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
             if para_atualizar:
                 NotaFiscal.objects.bulk_update(para_atualizar, fields=campos_update, batch_size=500)
 
+        # Propaga cancelamento de notas fiscais para ContaReceber e ItemVenda
+        notas_canceladas_nums = [
+            num for num, dados in registros_preparados.items()
+            if dados.get("status") == "CANCELADA"
+        ]
+        for num_nf in notas_canceladas_nums:
+            num_limpo = num_nf.lstrip("0") or "0"
+            vars_nf = {num_nf, num_limpo, num_nf.zfill(7)}
+            ContaReceber.objects.filter(
+                empresa=nome_empresa,
+                numero_documento__in=vars_nf,
+            ).update(cancelada=True, status="CANCELADO")
+            ContaReceber.objects.filter(
+                empresa=nome_empresa,
+                numero_duplicata__startswith=num_limpo,
+            ).update(cancelada=True, status="CANCELADO")
+            ItemVenda.objects.filter(
+                empresa=nome_empresa,
+                numero_nota__in=vars_nf,
+            ).delete()
+
         criadas_empresa = len(para_criar)
         atualizadas_empresa = len(para_atualizar)
 
@@ -374,16 +402,17 @@ def sincronizar_notas_hardness(data_inicio="", data_fim="", empresa_nome=None):
     return total_criadas, total_atualizadas
 
 
-def sincronizar_desde_ultimo_registro(empresa_nome=None):
+def sincronizar_desde_ultimo_registro(empresa_nome=None, dias_retroativos_padrao=15):
     """
-    Busca a data máxima gravada no banco (voltando 3 dias por segurança) e sincroniza
+    Busca a data máxima gravada no banco (voltando dias_retroativos_padrao por segurança,
+    garantindo que notas canceladas recentemente sejam atualizadas) e sincroniza
     todas as empresas até a data de hoje.
     """
     ultima_data = NotaFiscal.objects.aggregate(Max("data_emissao"))["data_emissao__max"]
     hoje = timezone.now().date()
 
     if ultima_data:
-        data_inicio_dt = ultima_data - timedelta(days=3)
+        data_inicio_dt = ultima_data - timedelta(days=dias_retroativos_padrao)
     else:
         data_inicio_dt = date(hoje.year, 1, 1)
 
@@ -762,6 +791,22 @@ def sincronizar_contas_receber_hardness(
         total_criados += c_emp
         total_atualizados += a_emp
 
+    # Sincroniza cancelamento de CR para notas fiscais que estão canceladas no banco
+    nfs_canceladas = set(NotaFiscal.objects.filter(status="CANCELADA").values_list("empresa", "numero_nota"))
+    for emp, num_nf in nfs_canceladas:
+        num_limpo = num_nf.lstrip("0") or "0"
+        vars_nf = {num_nf, num_limpo, num_nf.zfill(7)}
+        ContaReceber.objects.filter(
+            empresa=emp,
+            cancelada=False,
+            numero_documento__in=vars_nf,
+        ).update(cancelada=True, status="CANCELADO")
+        ContaReceber.objects.filter(
+            empresa=emp,
+            cancelada=False,
+            numero_duplicata__startswith=num_limpo,
+        ).update(cancelada=True, status="CANCELADO")
+
     return total_criados, total_atualizados
 
 
@@ -948,8 +993,8 @@ def sincronizar_financeiro_hardness(
       - Caso já possua registros, volta `dias_retroativos_padrao` (padrão 30 dias) para
         capturar baixas/pagamentos de títulos emitidos anteriormente.
     """
-    hoje = timezone.now().date()+timedelta(years=1)
-    data_fim_str = data_fim or hoje.strftime("%d/%m/%Y")
+    hoje = timezone.now().date()
+    data_fim_str = data_fim if data_fim is not None else ""
 
     if data_inicio:
         data_inicio_cr = data_inicio
@@ -1044,13 +1089,20 @@ def sincronizar_orcamentos_hardness(
 
             flag_status = (_limpar_str(item.get("T003_Flag_Status_Orcamento"), max_len=10) or "").upper()
             flag_perdido = (_limpar_str(item.get("T003_Flag_Perdido"), max_len=10) or "").upper()
+            status_texto = str(item.get("Status") or "").upper()
+            motivo_perda_str = _limpar_str(item.get("T003_Observacao_Orcamento_Perdido"))
+            obs_str = _limpar_str(item.get("T003_Observacao_1"))
 
-            if flag_perdido == "S":
-                status_calc = "PERDIDO"
-            elif flag_status == "C":
-                status_calc = "CANCELADO"
-            elif flag_status == "F" or flag_perdido == "F":
+            # 1. Finalizado / Ganho
+            if flag_status == "F" or flag_perdido == "F" or "FINALIZ" in status_texto:
                 status_calc = "FINALIZADO"
+            # 2. Motivo Desconsiderado / Cancelamento Administrativo (Duplicado, Teste, Erro de Preenchimento)
+            elif eh_motivo_desconsiderado(item, motivo_perda=motivo_perda_str, observacao=obs_str):
+                status_calc = "CANCELADO"
+            # 3. Perdido legítimo (concorrente, sem retorno, etc.)
+            elif flag_perdido == "S" or flag_status == "C" or "PERDID" in status_texto:
+                status_calc = "PERDIDO"
+            # 4. Aberto / Pendente
             else:
                 status_calc = "PENDENTE"
 
@@ -1159,12 +1211,177 @@ def sincronizar_orcamentos_hardness(
         total_criados += c_emp
         total_atualizados += a_emp
 
+    # Sincroniza também os itens detalhados dos orçamentos do período
+    try:
+        sincronizar_itens_orcamentos_hardness(
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            empresa_nome=empresa_nome,
+            api=api,
+        )
+    except Exception as exc:
+        print(f"⚠️ Erro ao sincronizar itens de orçamentos: {exc}")
+
+    return total_criados, total_atualizados
+
+
+def sincronizar_itens_orcamentos_hardness(
+    data_inicio: str,
+    data_fim: str,
+    empresa_nome: str = None,
+    api: HardnessAPI = None,
+):
+    """
+    Sincroniza os Itens de Orçamentos (crm001GridPrincipalOrcamentosProdutos) do Hardness ERP
+    em lote (bulk_create / bulk_update).
+    """
+    api = api or HardnessAPI()
+    if not api.autenticado:
+        api.login()
+
+    total_criados = 0
+    total_atualizados = 0
+
+    empresas_para_rodar = api.empresas_dict.items()
+    if empresa_nome and empresa_nome in api.empresas_dict:
+        empresas_para_rodar = [(empresa_nome, api.empresas_dict[empresa_nome])]
+
+    for nome_empresa, dados_empresa in empresas_para_rodar:
+        empresa_id = dados_empresa["id_sistema"]
+        print(f"\n📦 [Itens de Orçamentos] Sincronizando: {nome_empresa} ({data_inicio} a {data_fim})")
+
+        if not api.trocar_empresa(empresa_id):
+            print(f"⚠️ Pulando {nome_empresa} (Itens Orçamentos) por falha na troca de sessão.")
+            continue
+
+        if not api.filtrar_orcamentos_produtos(data_inicio=data_inicio, data_fim=data_fim):
+            print(f"⚠️ Não foi possível aplicar filtro de Itens de Orçamentos em {nome_empresa}.")
+            continue
+
+        df_itens = api.get_dados(url=api.orcamentos_produtos_url)
+        if df_itens.empty:
+            print(f"ℹ️ Nenhum item de orçamento encontrado para {nome_empresa} no período.")
+            continue
+
+        orcamentos_map = {
+            obj.numero_orcamento: obj
+            for obj in Orcamento.objects.filter(empresa=nome_empresa)
+        }
+
+        registros_preparados = {}
+        for item in df_itens.to_dict("records"):
+            t004_id = _limpar_str(item.get("T004_Id"))
+            if not t004_id or t004_id.lower() == "nan":
+                continue
+
+            id_item_erp = f"{empresa_id}-{t004_id}"
+            num_orc = _limpar_str(item.get("T003_Id"))
+            codigo_prod = _limpar_str(item.get("T004_Codigo_Produto") or item.get("D001_Codigo_Produto"))
+            if not codigo_prod or codigo_prod.lower() == "nan":
+                continue
+
+            desc_prod = _limpar_str(
+                item.get("T004_Descricao_Produto") or item.get("D001_Descricao_Produto") or "PRODUTO SEM DESCRICAO",
+                max_len=255,
+            )
+            qtd = parse_decimal(item.get("T004_Quantidade"))
+            v_total = parse_decimal(item.get("T004_Valor_Total_Preco"))
+            v_unit = (
+                parse_decimal(
+                    item.get("T004_Valor_Preco_Sem_Desconto_Unitario")
+                    or item.get("T004_Valor_Preco_Bruto")
+                    or item.get("Preco_Bruto"),
+                    casas=4,
+                )
+                if (
+                    parse_decimal(
+                        item.get("T004_Valor_Preco_Sem_Desconto_Unitario")
+                        or item.get("T004_Valor_Preco_Bruto")
+                        or item.get("Preco_Bruto")
+                    )
+                    > 0
+                )
+                else (v_total / qtd if qtd > 0 else Decimal("0.00"))
+            )
+
+            vend_str = _limpar_str(
+                item.get("vendedor.C007_Primeiro_Nome") or item.get("Vendedor.C007_Primeiro_Nome"),
+                max_len=100,
+            )
+
+            registros_preparados[id_item_erp] = {
+                "empresa": nome_empresa,
+                "numero_orcamento": num_orc,
+                "orcamento": orcamentos_map.get(num_orc),
+                "codigo_produto": codigo_prod,
+                "descricao_produto": desc_prod,
+                "marca": _limpar_str(item.get("D082_Marca"), max_len=100),
+                "unidade": _limpar_str(item.get("D037_Unidade"), max_len=20),
+                "quantidade": qtd,
+                "valor_unitario": v_unit,
+                "valor_total": v_total,
+                "data_emissao": parse_data(item.get("T003_Data_Emissao")),
+                "cliente_nome": _limpar_str(item.get("D024_Nome_Empresa") or item.get("D024_Nome_Fantasia"), max_len=255),
+                "vendedor_nome": vend_str.upper() if vend_str else None,
+                "dados_brutos": {k: (None if pd.isna(v) else v) for k, v in item.items()},
+            }
+
+        existentes_map = {
+            obj.id_item_erp: obj
+            for obj in ItemOrcamento.objects.filter(
+                id_item_erp__in=list(registros_preparados.keys())
+            )
+        }
+
+        agora = timezone.now()
+        para_criar = []
+        para_atualizar = []
+        campos_update = [
+            "empresa",
+            "numero_orcamento",
+            "orcamento",
+            "codigo_produto",
+            "descricao_produto",
+            "marca",
+            "unidade",
+            "quantidade",
+            "valor_unitario",
+            "valor_total",
+            "data_emissao",
+            "cliente_nome",
+            "vendedor_nome",
+            "dados_brutos",
+            "data_sincronizacao",
+        ]
+
+        for id_item, defaults in registros_preparados.items():
+            existente = existentes_map.get(id_item)
+            if existente:
+                for campo, valor in defaults.items():
+                    setattr(existente, campo, valor)
+                existente.data_sincronizacao = agora
+                para_atualizar.append(existente)
+            else:
+                para_criar.append(ItemOrcamento(id_item_erp=id_item, **defaults))
+
+        with transaction.atomic():
+            if para_criar:
+                ItemOrcamento.objects.bulk_create(para_criar, batch_size=500)
+            if para_atualizar:
+                ItemOrcamento.objects.bulk_update(para_atualizar, fields=campos_update, batch_size=500)
+
+        c_emp = len(para_criar)
+        a_emp = len(para_atualizar)
+        print(f"✅ [Itens de Orçamentos] {nome_empresa}: {c_emp} criados, {a_emp} atualizados.")
+        total_criados += c_emp
+        total_atualizados += a_emp
+
     return total_criados, total_atualizados
 
 
 def sincronizar_orcamentos_desde_ultimo_registro(
     empresa_nome: str = None,
-    dias_retroativos_padrao: int = 15,
+    dias_retroativos_padrao: int = 60,
 ):
     """
     Sincroniza orçamentos de forma incremental (voltando `dias_retroativos_padrao` dias

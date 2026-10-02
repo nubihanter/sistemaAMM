@@ -6,7 +6,7 @@ from datetime import datetime, date, timedelta
 from decimal import Decimal
 import pandas as pd
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from integrations.ca_epi import ConsultaCAClient
@@ -316,7 +316,7 @@ def sincronizar_itens_venda_hardness(data_inicio="", data_fim="", empresa_nome=N
             data_inicio=data_inicio,
             data_fim=data_fim,
             CFOP="VENDA",
-            cancelada="N",
+            cancelada="",
             url=api.produtos_url
         )
         if not filtro_ok:
@@ -332,6 +332,10 @@ def sincronizar_itens_venda_hardness(data_inicio="", data_fim="", empresa_nome=N
         for item in df_itens.to_dict("records"):
             cancelada = str(item.get("T007_Flag_Cancelada", "N")).strip().upper()
             if cancelada == "S":
+                t008_id = str(item.get("T008_Id") or "").strip()
+                id_item_erp = f"{empresa_id}-{t008_id}"
+                numero_nf = str(item.get("T007_Numero_Nota_Fiscal") or "").strip()
+                ItemVenda.objects.filter(Q(id_item_erp=id_item_erp) | Q(empresa=nome_empresa, numero_nota=numero_nf)).delete()
                 continue
 
             t008_id = str(item.get("T008_Id") or "").strip()
@@ -447,6 +451,13 @@ def sincronizar_itens_venda_hardness(data_inicio="", data_fim="", empresa_nome=N
         total_criados += criados_emp
         total_atualizados += atualizados_emp
 
+    # Remove itens de venda associados a notas fiscais canceladas
+    nfs_canceladas = set(NotaFiscal.objects.filter(status="CANCELADA").values_list("empresa", "numero_nota"))
+    for emp, num_nf in nfs_canceladas:
+        num_limpo = num_nf.lstrip("0") or "0"
+        vars_nf = {num_nf, num_limpo, num_nf.zfill(7)}
+        ItemVenda.objects.filter(empresa=emp, numero_nota__in=vars_nf).delete()
+
     return total_criados, total_atualizados
 
 
@@ -461,8 +472,8 @@ def sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=180):
     hoje = timezone.now().date()
 
     if ultima_data:
-        # Volta 3 dias por segurança para pegar notas emitidas no fim do dia
-        dt_inicio = ultima_data - timedelta(days=3)
+        # Volta 15 dias por segurança para pegar alterações e cancelamentos recentes
+        dt_inicio = ultima_data - timedelta(days=15)
     else:
         dt_inicio = hoje - timedelta(days=dias_retroativos_padrao)
 

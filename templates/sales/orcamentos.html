@@ -115,7 +115,7 @@
                 <option value="TODOS" {% if status_filtro == 'TODOS' %}selected{% endif %}>Todos os Status</option>
                 <option value="FINALIZADO" {% if status_filtro == 'FINALIZADO' %}selected{% endif %}>✅ Realizados / Ganhos</option>
                 <option value="PENDENTE" {% if status_filtro == 'PENDENTE' %}selected{% endif %}>⏳ Em Aberto / Pendentes</option>
-                <option value="PERDIDO" {% if status_filtro == 'PERDIDO' %}selected{% endif %}>❌ Perdidos / Cancelados</option>
+                <option value="PERDIDO" {% if status_filtro == 'PERDIDO' %}selected{% endif %}>❌ Perdidos (Comercial)</option>
             </select>
         </div>
 
@@ -186,22 +186,22 @@
         </div>
     </div>
 
-    <!-- 4. Perdidos / Cancelados -->
+    <!-- 4. Perdidos (Comercial) -->
     <div class="col-xl-3 col-md-6">
         <div class="card card-metric p-3 bg-white border-start border-danger border-4 h-100">
             <div class="d-flex justify-content-between align-items-center">
-                <span class="text-muted small fw-bold">❌ Perdidos / Cancelados</span>
+                <span class="text-muted small fw-bold">❌ Perdidos (Comercial)</span>
                 <span class="badge bg-danger-subtle text-danger border">{{ kpis.pct_perdido_valor }} em R$</span>
             </div>
             <h4 class="fw-bold text-danger mb-1 mt-1">{{ kpis.valor_perdido }}</h4>
-            <small class="text-muted"><strong>{{ kpis.qtd_perdidos }}</strong> orçamentos não convertidos</small>
+            <small class="text-muted"><strong>{{ kpis.qtd_perdidos }}</strong> perdas comerciais (concorrência/declínio)</small>
         </div>
     </div>
 </div>
 
 <!-- Gráficos Principais -->
 <div class="row g-3 mb-4">
-    <div class="col-lg-5">
+    <div class="col-lg-4">
         <div class="card card-kpi p-3 bg-white h-100">
             {% if grafico_status %}
                 {{ grafico_status|safe }}
@@ -210,7 +210,16 @@
             {% endif %}
         </div>
     </div>
-    <div class="col-lg-7">
+    <div class="col-lg-4">
+        <div class="card card-kpi p-3 bg-white h-100">
+            {% if grafico_causas_perda %}
+                {{ grafico_causas_perda|safe }}
+            {% else %}
+                <div class="text-center p-5 text-muted">Nenhuma perda comercial registrada no período.</div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-4">
         <div class="card card-kpi p-3 bg-white h-100">
             {% if grafico_vendedores %}
                 {{ grafico_vendedores|safe }}
@@ -262,6 +271,93 @@
     </div>
 </div>
 {% endif %}
+
+<!-- Ranking de Produtos Não Vendidos pelo Motivo Preço -->
+<div class="card card-kpi p-4 bg-white mb-4 border-start border-danger border-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div>
+            <div class="d-flex align-items-center gap-2">
+                <h5 class="fw-bold mb-0">📉 Ranking de Produtos Não Vendidos pelo Motivo Preço</h5>
+                <span class="badge bg-danger-subtle text-danger border">{{ kpis.ranking_preco_total_produtos }} produtos</span>
+            </div>
+            <small class="text-muted">Itens cotados em orçamentos perdidos por preço ou concorrente em {{ mes_selecionado|stringformat:"02d" }}/{{ ano_selecionado }}.</small>
+        </div>
+        <div class="d-flex flex-wrap gap-2 text-end">
+            <div class="px-3 py-1 bg-light rounded border">
+                <small class="text-muted d-block" style="font-size: 0.72rem;">Orçamentos Impactados</small>
+                <span class="fw-bold text-dark">{{ kpis.ranking_preco_total_orcs }} orç.</span>
+            </div>
+            <div class="px-3 py-1 bg-light rounded border">
+                <small class="text-muted d-block" style="font-size: 0.72rem;">Qtd Total Não Vendida</small>
+                <span class="fw-bold text-dark">{{ kpis.ranking_preco_total_qtd }} un</span>
+            </div>
+            <div class="px-3 py-1 bg-danger-subtle rounded border border-danger">
+                <small class="text-danger d-block fw-semibold" style="font-size: 0.72rem;">Valor Total Perdido (Preço)</small>
+                <span class="fw-bold text-danger">{{ kpis.ranking_preco_total_valor }}</span>
+            </div>
+        </div>
+    </div>
+
+    {% if ranking_produtos_preco %}
+    <div class="table-responsive">
+        <table id="tabelaRankingPreco" class="table table-hover align-middle w-100 table-sticky">
+            <thead class="table-dark">
+                <tr>
+                    <th class="text-center" style="width: 55px;">#</th>
+                    <th style="width: 110px;">Código (SKU)</th>
+                    <th>Descrição do Produto</th>
+                    <th style="width: 140px;">Marca</th>
+                    <th class="text-center" style="width: 100px;">Orçamentos</th>
+                    <th class="text-end" style="width: 110px;">Qtd Perdida</th>
+                    <th class="text-end" style="width: 130px;">Preço Médio Cotado</th>
+                    <th class="text-end" style="width: 180px;">Total Perdido (R$)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for prod in ranking_produtos_preco %}
+                <tr>
+                    <td class="text-center">
+                        {% if prod.posicao == 1 %}
+                            <span class="badge bg-warning text-dark fw-bold">🥇 1º</span>
+                        {% elif prod.posicao == 2 %}
+                            <span class="badge bg-secondary-subtle text-secondary-emphasis fw-bold">🥈 2º</span>
+                        {% elif prod.posicao == 3 %}
+                            <span class="badge bg-danger-subtle text-danger fw-bold">🥉 3º</span>
+                        {% else %}
+                            <span class="badge bg-light text-muted border">{{ prod.posicao }}º</span>
+                        {% endif %}
+                    </td>
+                    <td class="fw-bold text-nowrap"><span class="badge bg-light text-dark border">{{ prod.codigo_produto }}</span></td>
+                    <td>
+                        <div class="fw-semibold text-dark">{{ prod.descricao_produto }}</div>
+                    </td>
+                    <td class="text-nowrap"><small class="text-muted">{{ prod.marca }}</small></td>
+                    <td class="text-center">
+                        <span class="badge bg-light text-dark border">{{ prod.total_orcs }} orç.</span>
+                    </td>
+                    <td class="text-end fw-semibold text-nowrap" data-order="{{ prod.quantidade }}">
+                        {{ prod.quantidade|floatformat:0 }} un
+                    </td>
+                    <td class="text-end text-muted small text-nowrap" data-order="{{ prod.preco_medio }}">
+                        {{ prod.preco_medio_fmt }}
+                    </td>
+                    <td class="text-end fw-bold text-danger text-nowrap" data-order="{{ prod.valor_total }}">
+                        <div>{{ prod.valor_total_fmt }}</div>
+                        <div class="progress mt-1" style="height: 4px; background-color: #fee2e2;">
+                            <div class="progress-bar bg-danger" role="progressbar" style="width: {{ prod.pct_barra }}%;"></div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="p-4 text-center text-muted bg-light rounded border">
+        Nenhum item cotado em orçamentos perdidos por preço no período selecionado.
+    </div>
+    {% endif %}
+</div>
 
 <!-- Tabela Detalhada de Orçamentos do Mês -->
 <div class="card card-kpi p-4 bg-white mb-5">
@@ -359,6 +455,18 @@
                  "<'row mt-3 align-items-center'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
             pageLength: 15,
             lengthMenu: [[15, 25, 50, 100], [15, 25, 50, 100]],
+            order: []
+        });
+
+        $('#tabelaRankingPreco').DataTable({
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json'
+            },
+            dom: "<'row mb-2 align-items-center'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                 "<'table-matrix-scroll'tr>" +
+                 "<'row mt-3 align-items-center'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+            pageLength: 10,
+            lengthMenu: [[10, 25, 50, 100], [10, 25, 50, 100]],
             order: []
         });
     });

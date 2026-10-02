@@ -723,7 +723,7 @@ def disparar_sincronizacao_view(request):
                 data_inicio=di, data_fim=df_str
             )
         else:
-            funcao_sync = lambda: sincronizar_orcamentos_desde_ultimo_registro(dias_retroativos_padrao=15)
+            funcao_sync = lambda: sincronizar_orcamentos_desde_ultimo_registro(dias_retroativos_padrao=60)
 
     elif acao == "metas_piperun":
         tipo_sync = "METAS_PIPERUN"
@@ -753,7 +753,7 @@ def disparar_sincronizacao_view(request):
             nf_c, nf_a = sincronizar_desde_ultimo_registro()
             res_est = sincronizar_estoque_e_itens_rapido(dias_retroativos_padrao=60)
             res_fin = sincronizar_financeiro_hardness(dias_retroativos_padrao=30)
-            orc_c, orc_a = sincronizar_orcamentos_desde_ultimo_registro(dias_retroativos_padrao=15)
+            orc_c, orc_a = sincronizar_orcamentos_desde_ultimo_registro(dias_retroativos_padrao=60)
             mt_c, mt_a = sincronizar_metas_piperun(forcar_api=True)
             tot_c = (
                 nf_c
@@ -866,21 +866,23 @@ def dashboard_orcamentos_view(request):
     }
     nomes_orc = {
         str(v).strip().upper()
-        for v in Orcamento.objects.order_by().values_list("vendedor_nome", flat=True).distinct()
+        for v in Orcamento.objects.exclude(status="CANCELADO").order_by().values_list("vendedor_nome", flat=True).distinct()
         if v and str(v).strip().upper() not in ("", "NAN", "NONE", "DESCONHECIDO")
     }
     vendedores_disponiveis = sorted(v for v in nomes_orc if v in vendedores_ativos)
 
     empresas_disponiveis = sorted(
-        e for e in Orcamento.objects.order_by().values_list("empresa", flat=True).distinct() if e
+        e for e in Orcamento.objects.exclude(status="CANCELADO").order_by().values_list("empresa", flat=True).distinct() if e
     )
 
     (
         kpis,
         grafico_status,
         grafico_vendedores,
+        grafico_causas_perda,
         resumo_vendedores,
         tabela_orcamentos,
+        ranking_produtos_preco,
     ) = gerar_dashboard_orcamentos(
         mes_selecionado=mes_selecionado,
         ano_selecionado=ano_selecionado,
@@ -903,8 +905,10 @@ def dashboard_orcamentos_view(request):
         "kpis": kpis,
         "grafico_status": grafico_status,
         "grafico_vendedores": grafico_vendedores,
+        "grafico_causas_perda": grafico_causas_perda,
         "resumo_vendedores": resumo_vendedores,
         "tabela_orcamentos": tabela_orcamentos,
+        "ranking_produtos_preco": ranking_produtos_preco,
         "meses": [
             (1, "Jan"),
             (2, "Fev"),
@@ -961,7 +965,15 @@ def exportar_orcamentos_excel_view(request):
     else:
         vendedora_selecionada = request.GET.get("visao", "EMPRESA").strip().upper() or "EMPRESA"
 
-    kpis, _, _, resumo_vendedores, tabela_orcamentos = gerar_dashboard_orcamentos(
+    (
+        kpis,
+        _,
+        _,
+        _,
+        resumo_vendedores,
+        tabela_orcamentos,
+        ranking_produtos_preco,
+    ) = gerar_dashboard_orcamentos(
         mes_selecionado=mes_selecionado,
         ano_selecionado=ano_selecionado,
         vendedora_selecionada=vendedora_selecionada,
@@ -1007,7 +1019,7 @@ def exportar_orcamentos_excel_view(request):
     status_label_map = {
         "FINALIZADO": "Realizado / Ganho",
         "PENDENTE": "Em Aberto / Pendente",
-        "PERDIDO": "Perdido / Cancelado",
+        "PERDIDO": "Perdido (Comercial)",
     }
 
     for orc in tabela_orcamentos:
@@ -1058,13 +1070,57 @@ def exportar_orcamentos_excel_view(request):
         ("Qtd Orçamentos Realizados", f"{kpis.get('qtd_realizados', 0)} ({kpis.get('pct_realizado_qtd', '0.0%')})"),
         ("Orçamentos em Aberto / Pendentes (R$)", kpis.get("valor_pendente", "R$ 0,00")),
         ("% em Aberto (em R$)", kpis.get("pct_pendente_valor", "0.0%")),
-        ("Orçamentos Perdidos / Cancelados (R$)", kpis.get("valor_perdido", "R$ 0,00")),
+        ("Orçamentos Perdidos (Comercial) (R$)", kpis.get("valor_perdido", "R$ 0,00")),
         ("% Perdidos (em R$)", kpis.get("pct_perdido_valor", "0.0%")),
+        ("Produtos Distintos Perdidos por Preço", kpis.get("ranking_preco_total_produtos", 0)),
+        ("Total Itens Perdidos por Preço (Qtd)", kpis.get("ranking_preco_total_qtd", "0")),
+        ("Valor Total Perdido por Preço (R$)", kpis.get("ranking_preco_total_valor", "R$ 0,00")),
     ]:
         ws_resumo.append([label, val])
 
     ws_resumo.column_dimensions["A"].width = 40
     ws_resumo.column_dimensions["B"].width = 26
+
+    # Aba 3: Ranking de Produtos Não Vendidos pelo Motivo Preço
+    if ranking_produtos_preco:
+        ws_rank = wb.create_sheet(title="Produtos Perdidos por Preço")
+        col_rank = [
+            "Posição",
+            "Código (SKU)",
+            "Descrição do Produto",
+            "Marca",
+            "Qtd Perdida",
+            "Preço Médio Cotado (R$)",
+            "Total Perdido (R$)",
+            "Qtd Orçamentos",
+        ]
+        ws_rank.append(col_rank)
+        for c_idx in range(1, len(col_rank) + 1):
+            c = ws_rank.cell(row=1, column=c_idx)
+            c.fill = header_fill
+            c.font = header_font
+            c.alignment = Alignment(horizontal="center", vertical="center")
+
+        for r_p in ranking_produtos_preco:
+            ws_rank.append([
+                f"{r_p['posicao']}º",
+                r_p["codigo_produto"],
+                r_p["descricao_produto"],
+                r_p["marca"],
+                r_p["quantidade"],
+                r_p["preco_medio"],
+                r_p["valor_total"],
+                r_p["total_orcs"],
+            ])
+            r_idx = ws_rank.max_row
+            for c_idx in range(1, len(col_rank) + 1):
+                ws_rank.cell(row=r_idx, column=c_idx).border = thin_border
+            ws_rank.cell(row=r_idx, column=6).number_format = "R$ #,##0.00"
+            ws_rank.cell(row=r_idx, column=7).number_format = "R$ #,##0.00"
+
+        larg_rank = [12, 18, 45, 20, 16, 24, 22, 18]
+        for idx, larg in enumerate(larg_rank, start=1):
+            ws_rank.column_dimensions[get_column_letter(idx)].width = larg
 
     buffer = BytesIO()
     wb.save(buffer)
@@ -1082,17 +1138,116 @@ def exportar_orcamentos_excel_view(request):
 @login_required
 def dashboard_financeiro_view(request):
     """
-    Página Financeira (Contas a Receber & Contas a Pagar):
-    Focada no cálculo do Lucro Líquido (DRE Simplificado) e na Conciliação Bancária.
-    Restrita exclusivamente ao perfil Administrador.
+    Central Financeira AMM:
+    1. Gestão de Fluxo de Caixa, Liquidez, Projeção (3/6/12m), Fluxo Diário e Inadimplência
+    2. Módulo de Gestão e Controle de Custos (Classificação customizável, Comparativos e Alertas)
+    3. Resultado / DRE Simplificado
+    4. Conciliação Bancária por Portador / Forma de Pagamento
+    Restrita ao perfil Administrador.
     """
-    from .models import ContaPagar, ContaReceber
+    from decimal import Decimal, InvalidOperation
+    from django.contrib import messages
+    from .financeiro_services import (
+        gerar_fluxo_caixa_e_liquidez,
+        gerar_modulo_gestao_custos,
+        obter_configuracao_financeira,
+    )
+    from .models import ClassificacaoCusto, ContaPagar, ContaReceber
 
     user = request.user
     if not getattr(user, "is_admin", False):
         if getattr(user, "role", None) in ("ALMOXARIFADO", "COMPRAS"):
             return redirect("dashboard_estoque")
         return redirect("dashboard_vendas")
+
+    def _parse_decimal_input(val_str, default_val=None):
+        if val_str is None:
+            return default_val
+        s = str(val_str).strip().replace("R$", "").replace(" ", "")
+        if not s:
+            return default_val
+        if "," in s and "." in s:
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "").replace(",", ".")
+            else:
+                s = s.replace(",", "")
+        elif "," in s:
+            s = s.replace(",", ".")
+        try:
+            return Decimal(s)
+        except (InvalidOperation, ValueError):
+            return default_val
+
+    if request.method == "POST":
+        acao_fin = request.POST.get("acao_fin", "").strip()
+        escopo_post = request.POST.get("empresa", "TODAS").strip() or "TODAS"
+        nome_resp = (user.get_full_name() or user.first_name or user.username or "Admin").strip()
+
+        if acao_fin == "atualizar_saldo":
+            cfg = obter_configuracao_financeira(escopo_post)
+            novo_saldo = _parse_decimal_input(request.POST.get("saldo_bancario_atual"), cfg.saldo_bancario_atual)
+            nova_reserva = _parse_decimal_input(request.POST.get("reserva_minima"), cfg.reserva_minima)
+            cfg.saldo_bancario_atual = novo_saldo
+            if nova_reserva is not None and nova_reserva >= 0:
+                cfg.reserva_minima = nova_reserva
+            cfg.usuario_atualizacao = nome_resp
+            cfg.save()
+            messages.success(
+                request,
+                f"Saldo bancário atualizado para R$ {float(cfg.saldo_bancario_atual):,.2f} por {nome_resp}.",
+            )
+            return redirect(_obter_redirect_seguro(request, "/sales/financeiro/"))
+
+        elif acao_fin == "salvar_classificacao_custo":
+            cfg = obter_configuracao_financeira(escopo_post)
+            novo_pct = _parse_decimal_input(request.POST.get("alerta_aumento_pct"), cfg.alerta_aumento_pct)
+            novo_val = _parse_decimal_input(request.POST.get("alerta_aumento_valor"), cfg.alerta_aumento_valor)
+            if novo_pct is not None and novo_pct > 0:
+                cfg.alerta_aumento_pct = novo_pct
+            if novo_val is not None and novo_val >= 0:
+                cfg.alerta_aumento_valor = novo_val
+            cfg.usuario_atualizacao = nome_resp
+            cfg.save()
+
+            ids_contas = request.POST.getlist("conta_id")
+            alterados = 0
+            for cid in ids_contas:
+                try:
+                    obj_c = ClassificacaoCusto.objects.filter(id=int(cid)).first()
+                except ValueError:
+                    obj_c = None
+                if not obj_c:
+                    continue
+                nova_cat = request.POST.get(f"categoria_{cid}", "").strip()
+                nova_sub = request.POST.get(f"subcategoria_{cid}", "").strip()
+                novo_tipo = request.POST.get(f"tipo_custo_{cid}", "").strip().upper()
+                novo_rec = request.POST.get(f"recorrente_{cid}") in ("1", "on", "true", "True")
+
+                mudou = False
+                if nova_cat and nova_cat != obj_c.categoria:
+                    obj_c.categoria = nova_cat
+                    mudou = True
+                if nova_sub != (obj_c.subcategoria or ""):
+                    obj_c.subcategoria = nova_sub or None
+                    mudou = True
+                if novo_tipo in dict(ClassificacaoCusto.TIPO_CUSTO_CHOICES) and novo_tipo != obj_c.tipo_custo:
+                    obj_c.tipo_custo = novo_tipo
+                    mudou = True
+                if novo_rec != obj_c.recorrente:
+                    obj_c.recorrente = novo_rec
+                    mudou = True
+
+                if mudou:
+                    obj_c.editado_manualmente = True
+                    obj_c.atualizado_por = nome_resp
+                    obj_c.save()
+                    alterados += 1
+
+            messages.success(
+                request,
+                f"Configurações de custos salvas com sucesso ({alterados} conta(s) reclassificada(s)).",
+            )
+            return redirect(_obter_redirect_seguro(request, "/sales/financeiro/?aba=custos"))
 
     hoje = timezone.now().date()
     try:
@@ -1107,11 +1262,29 @@ def dashboard_financeiro_view(request):
     except ValueError:
         ano_selecionado = hoje.year
 
+    try:
+        horizonte_meses = int(request.GET.get("horizonte", 3))
+        if horizonte_meses not in (3, 6, 12):
+            horizonte_meses = 3
+    except ValueError:
+        horizonte_meses = 3
+
     empresa_filtro = request.GET.get("empresa", "TODAS").strip() or "TODAS"
     regime = request.GET.get("regime", "CAIXA").strip().upper() or "CAIXA"
     if regime not in ("CAIXA", "COMPETENCIA"):
         regime = "CAIXA"
     portador_filtro = request.GET.get("portador", "TODOS").strip().upper() or "TODOS"
+    status_filtro = request.GET.get("status", "TODOS").strip().upper() or "TODOS"
+    if status_filtro not in ("TODOS", "A_VENCER", "RECEBIDO", "VENCIDO"):
+        status_filtro = "TODOS"
+
+    aba_ativa = request.GET.get("aba", "fluxo").strip().lower() or "fluxo"
+    if aba_ativa not in ("fluxo", "custos", "dre", "conciliacao"):
+        aba_ativa = "fluxo"
+
+    sim_valor_dec = _parse_decimal_input(request.GET.get("sim_valor"), Decimal("0.00"))
+    simulacao_valor = float(sim_valor_dec or 0.0)
+    simulacao_vencimento = request.GET.get("sim_vencimento", "").strip()
 
     empresas_cr = set(
         e for e in ContaReceber.objects.order_by().values_list("empresa", flat=True).distinct() if e
@@ -1135,10 +1308,35 @@ def dashboard_financeiro_view(request):
         empresa_filtro=empresa_filtro,
         regime=regime,
         portador_filtro=portador_filtro,
+        status_filtro=status_filtro,
+        gerar_graficos=True,
+    )
+
+    fluxo = gerar_fluxo_caixa_e_liquidez(
+        mes_selecionado=mes_selecionado,
+        ano_selecionado=ano_selecionado,
+        horizonte_meses=horizonte_meses,
+        empresa_filtro=empresa_filtro,
+        portador_filtro=portador_filtro,
+        status_filtro=status_filtro,
+        simulacao_valor=simulacao_valor,
+        simulacao_vencimento=simulacao_vencimento,
+        gerar_graficos=True,
+    )
+
+    custos = gerar_modulo_gestao_custos(
+        mes_selecionado=mes_selecionado,
+        ano_selecionado=ano_selecionado,
+        empresa_filtro=empresa_filtro,
         gerar_graficos=True,
     )
 
     context = {
+        "aba_ativa": aba_ativa,
+        "horizonte_meses": horizonte_meses,
+        "status_filtro": status_filtro,
+        "simulacao_valor": request.GET.get("sim_valor", ""),
+        "simulacao_vencimento": simulacao_vencimento,
         "mes_selecionado": mes_selecionado,
         "ano_selecionado": ano_selecionado,
         "empresa_filtro": empresa_filtro,
@@ -1146,6 +1344,8 @@ def dashboard_financeiro_view(request):
         "regime": regime,
         "portador_filtro": portador_filtro,
         "portadores_disponiveis": portadores_disponiveis,
+        "fluxo": fluxo,
+        "custos": custos,
         "kpis": kpis,
         "dre": dre,
         "grafico_dre": grafico_dre,
@@ -1168,6 +1368,6 @@ def dashboard_financeiro_view(request):
             (11, "Nov"),
             (12, "Dez"),
         ],
-        "anos": [hoje.year, hoje.year - 1, hoje.year - 2],
+        "anos": [hoje.year + 1, hoje.year, hoje.year - 1, hoje.year - 2],
     }
     return render(request, "sales/financeiro.html", context)

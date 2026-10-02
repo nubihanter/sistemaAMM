@@ -10,7 +10,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.utils import PlotlyJSONEncoder
-from .models import ContaPagar, ContaReceber, MetaVendedor, NotaFiscal, Orcamento, Vendedor
+from django.db.models import Count, Max, Q, Sum
+from .models import ContaPagar, ContaReceber, ItemOrcamento, MetaVendedor, NotaFiscal, Orcamento, Vendedor
 from inventory.models import ItemVenda, ProdutoEPI
 
 USUARIO_PIPERUN_META_EMPRESA = "MARCELO NERIS"
@@ -1163,6 +1164,46 @@ MOTIVOS_PERDA_PADRAO_D047 = {
     "49": "DUPLICADO",
 }
 
+D047_MOTIVOS_DESCONSIDERADOS = {
+    "40",  # ERRO DE PREENCHIMENTO
+    "42",  # ORÇAMENTO DUPLICADO
+    "44",  # TESTE DO SISTEMA
+    "49",  # DUPLICADO
+}
+
+PADROES_MOTIVOS_DESCONSIDERADOS = [
+    r"\bDUPLICAD",
+    r"\bTESTE",
+    r"ERRO DE PREENCHIMENTO",
+    r"ORCAMENTO DUPLICADO",
+]
+RE_MOTIVOS_DESCONSIDERADOS = re.compile("|".join(PADROES_MOTIVOS_DESCONSIDERADOS), re.IGNORECASE)
+
+
+def eh_motivo_desconsiderado(dados_brutos, motivo_perda="", observacao="", status_consolidado="") -> bool:
+    """
+    Retorna True se o orçamento tiver motivo que não deve ser computado na tela de orçamentos:
+    duplicado, teste, erro de preenchimento, orçamento duplicado.
+    """
+    if str(status_consolidado).strip().upper() == "FINALIZADO":
+        return False
+
+    cod_d047 = ""
+    if isinstance(dados_brutos, dict):
+        cod_d047 = str(dados_brutos.get("T003_D047_Id") or "").strip()
+
+    if cod_d047 in D047_MOTIVOS_DESCONSIDERADOS:
+        return True
+
+    textos = f"{motivo_perda or ''} {observacao or ''}".strip()
+    if not textos:
+        return False
+
+    nfkd = unicodedata.normalize("NFKD", textos)
+    texto_norm = "".join(c for c in nfkd if not unicodedata.combining(c)).upper()
+
+    return bool(RE_MOTIVOS_DESCONSIDERADOS.search(texto_norm))
+
 
 def resolver_motivo_perda_padrao(dados_brutos, status_consolidado: str = "") -> str:
     """
@@ -1197,10 +1238,22 @@ def gerar_dashboard_orcamentos(
     - Orçamentos em aberto (pendentes) e perdidos/cancelados (R$, % e quantidade)
     - Ranking / conversão por vendedor (apenas vendedores ativos) e tabela de orçamentos do período
       com o campo padronizado de Motivo de Perda (T003_D047_Id) além da Observação.
+    Desconsidera dos cálculos e tabelas os motivos: duplicado, teste, erro de preenchimento, orçamento duplicado.
     """
+    # Exclui na raiz do banco qualquer orçamento cancelado ou com motivos desconsiderados (duplicado, teste, erro de preenchimento)
     qs = Orcamento.objects.filter(
         data_emissao__year=ano_selecionado,
         data_emissao__month=mes_selecionado,
+    ).exclude(status="CANCELADO").exclude(
+        Q(dados_brutos__T003_D047_Id__in=["40", "42", "44", "49", 40, 42, 44, 49])
+        | Q(motivo_perda__icontains="duplicad")
+        | Q(motivo_perda__icontains="teste")
+        | Q(motivo_perda__icontains="erro de preenchimento")
+        | Q(motivo_perda__icontains="orçamento duplicado")
+        | Q(observacao__icontains="duplicad")
+        | Q(observacao__icontains="teste")
+        | Q(observacao__icontains="erro de preenchimento")
+        | Q(observacao__icontains="orçamento duplicado")
     )
     if empresa_filtro and empresa_filtro != "TODAS":
         qs = qs.filter(empresa=empresa_filtro)
@@ -1245,13 +1298,18 @@ def gerar_dashboard_orcamentos(
         "pct_pendente_valor": "0.0%",
         "qtd_perdidos": 0,
         "valor_perdido": "R$ 0,00",
+        "valor_perdido_raw": 0.0,
         "pct_perdido_valor": "0.0%",
         "margem_realizados_pct": "0.0%",
         "lucro_bruto_realizados": "R$ 0,00",
+        "ranking_preco_total_produtos": 0,
+        "ranking_preco_total_qtd": "0",
+        "ranking_preco_total_valor": "R$ 0,00",
+        "ranking_preco_total_orcs": 0,
     }
 
     if not registros_mes:
-        return kpis_vazios, "", "", [], []
+        return kpis_vazios, "", "", "", [], [], []
 
     df_all = pd.DataFrame(registros_mes)
     df_all["valor_total"] = pd.to_numeric(df_all["valor_total"], errors="coerce").fillna(0.0).astype(float)
@@ -1291,14 +1349,30 @@ def gerar_dashboard_orcamentos(
         for db, st in zip(df_all["dados_brutos"], df_all["status_consolidado"])
     ]
 
+    # Identifica orçamentos com motivos que não devem ser computados na tela de orçamentos:
+    # duplicado, teste, erro de preenchimento, orçamento duplicado, ou com status CANCELADO
+    df_all["desconsiderar"] = [
+        (st_orig == "CANCELADO") or eh_motivo_desconsiderado(db, mp, obs, sc)
+        for db, mp, obs, sc, st_orig in zip(
+            df_all["dados_brutos"],
+            df_all["motivo_perda"],
+            df_all["observacao"],
+            df_all["status_consolidado"],
+            st_raw,
+        )
+    ]
+
     # Filtra pela visão selecionada (EMPRESA ou Vendedor específico)
     if vendedora_selecionada and vendedora_selecionada != "EMPRESA":
-        df_visao = df_all[df_all["vendedor_nome"] == vendedora_selecionada.strip().upper()].copy()
+        df_visao_raw = df_all[df_all["vendedor_nome"] == vendedora_selecionada.strip().upper()].copy()
     else:
-        df_visao = df_all.copy()
+        df_visao_raw = df_all.copy()
+
+    # Não computa orçamentos de teste, duplicados ou com erro de preenchimento
+    df_visao = df_visao_raw[~df_visao_raw["desconsiderar"]].copy()
 
     if df_visao.empty:
-        return kpis_vazios, "", "", [], []
+        return kpis_vazios, "", "", "", [], [], []
 
     qtd_total = len(df_visao)
     valor_orcado = float(df_visao["valor_total"].sum())
@@ -1345,6 +1419,7 @@ def gerar_dashboard_orcamentos(
         "pct_pendente_valor": f"{pct_pendente_valor:.1f}%",
         "qtd_perdidos": qtd_perdidos,
         "valor_perdido": f"R$ {valor_perdido:,.2f}",
+        "valor_perdido_raw": valor_perdido,
         "pct_perdido_valor": f"{pct_perdido_valor:.1f}%",
         "margem_realizados_pct": f"{margem_real_pct:.1f}%",
         "lucro_bruto_realizados": f"R$ {lucro_bruto_real:,.2f}",
@@ -1407,15 +1482,17 @@ def gerar_dashboard_orcamentos(
     resumo_vendedores.sort(key=lambda r: r["valor_realizado"], reverse=True)
 
     # Gráficos Plotly
+    # Gráficos Plotly
     grafico_status_html = ""
     grafico_vendedores_html = ""
+    grafico_causas_perda_html = ""
 
     if gerar_graficos:
         df_status_chart = pd.DataFrame(
             [
                 {"Status": "Realizado (Ganho)", "Valor": valor_realizado, "Qtd": qtd_realizados},
                 {"Status": "Em Aberto (Pendente)", "Valor": valor_pendente, "Qtd": qtd_pendentes},
-                {"Status": "Perdido / Cancelado", "Valor": valor_perdido, "Qtd": qtd_perdidos},
+                {"Status": "Perdido (Comercial)", "Valor": valor_perdido, "Qtd": qtd_perdidos},
             ]
         )
         fig_st = px.bar(
@@ -1424,16 +1501,54 @@ def gerar_dashboard_orcamentos(
             y="Valor",
             color="Status",
             text_auto=".2s",
-            title=f"📊 Orçamentos no Mês por Status em R$ ({mes_selecionado:02d}/{ano_selecionado})",
+            title=f"📊 Orçamentos por Status em R$ ({mes_selecionado:02d}/{ano_selecionado})",
             labels={"Valor": "Valor Total (R$)", "Status": "Situação do Orçamento"},
             color_discrete_map={
                 "Realizado (Ganho)": "#15803d",
                 "Em Aberto (Pendente)": "#f59e0b",
-                "Perdido / Cancelado": "#dc2626",
+                "Perdido (Comercial)": "#dc2626",
             },
         )
         fig_st.update_layout(showlegend=False, height=340, margin=dict(t=45, b=20, l=20, r=20))
         grafico_status_html = fig_to_html(fig_st)
+
+        # Gráfico de Pizza: Causas de Perdas Comerciais em R$
+        df_perdidos = df_visao[df_visao["status_consolidado"] == "PERDIDO"].copy()
+        if not df_perdidos.empty:
+            df_causas = (
+                df_perdidos.groupby("motivo_perda_padrao", as_index=False)
+                .agg(Valor=("valor_total", "sum"), Qtd=("numero_orcamento", "count"))
+                .sort_values(by="Valor", ascending=False)
+            )
+            df_causas["Motivo"] = df_causas["motivo_perda_padrao"].astype(str).str.title()
+            fig_causas = px.pie(
+                df_causas,
+                names="Motivo",
+                values="Valor",
+                title=f"🎯 Causas de Perdas Comerciais em R$ ({mes_selecionado:02d}/{ano_selecionado})",
+                hole=0.45,
+                color_discrete_sequence=[
+                    "#dc2626",
+                    "#f97316",
+                    "#f59e0b",
+                    "#eab308",
+                    "#64748b",
+                    "#8b5cf6",
+                    "#06b6d4",
+                ],
+            )
+            fig_causas.update_traces(
+                textposition="inside",
+                textinfo="percent+label",
+                hovertemplate="<b>%{label}</b><br>Perda: R$ %{value:,.2f}<br>Participação: %{percent}<extra></extra>",
+            )
+            fig_causas.update_layout(
+                height=340,
+                margin=dict(t=45, b=20, l=20, r=20),
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5),
+            )
+            grafico_causas_perda_html = fig_to_html(fig_causas)
 
         if resumo_vendedores:
             df_vend_chart = pd.DataFrame(resumo_vendedores).head(12)
@@ -1458,7 +1573,7 @@ def gerar_dashboard_orcamentos(
             )
             fig_vend.update_layout(
                 barmode="group",
-                title="🎯 Orçado vs Realizado (R$) e % Conversão por Vendedor Ativo",
+                title="🏆 Orçado vs Realizado (R$) e % Conversão por Vendedor",
                 yaxis_title="Valor (R$)",
                 xaxis_title="Vendedor",
                 height=340,
@@ -1466,6 +1581,83 @@ def gerar_dashboard_orcamentos(
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             )
             grafico_vendedores_html = fig_to_html(fig_vend)
+
+    # -------------------------------------------------------------
+    # Ranking de Produtos Não Vendidos pelo Motivo Preço
+    # -------------------------------------------------------------
+    df_perdidos_preco = df_visao[
+        (df_visao["status_consolidado"] == "PERDIDO")
+        & (
+            df_visao["motivo_perda_padrao"].str.upper().str.contains("PREÇO|PRECO", na=False)
+            | df_visao["motivo_perda"].str.upper().str.contains("PREÇO|PRECO|CONCORRENTE", na=False)
+            | df_visao["observacao"].str.upper().str.contains("PREÇO|PRECO|CONCORRENTE", na=False)
+            | df_visao["dados_brutos"].apply(
+                lambda d: str(d.get("T003_D047_Id") or "") in ("41", "45") if isinstance(d, dict) else False
+            )
+        )
+    ]
+    numeros_orcs_preco = set(df_perdidos_preco["numero_orcamento"].astype(str).unique())
+
+    ranking_produtos_preco = []
+    kpi_ranking_total_produtos = 0
+    kpi_ranking_total_qtd = 0.0
+    kpi_ranking_total_valor = 0.0
+
+    if numeros_orcs_preco:
+        qs_itens = ItemOrcamento.objects.filter(
+            numero_orcamento__in=numeros_orcs_preco,
+            data_emissao__year=ano_selecionado,
+            data_emissao__month=mes_selecionado,
+        )
+        if empresa_filtro and empresa_filtro != "TODAS":
+            qs_itens = qs_itens.filter(empresa=empresa_filtro)
+        if vendedora_selecionada and vendedora_selecionada != "EMPRESA":
+            qs_itens = qs_itens.filter(vendedor_nome=vendedora_selecionada.strip().upper())
+
+        itens_agg = list(
+            qs_itens.values("codigo_produto", "descricao_produto")
+            .annotate(
+                total_qtd=Sum("quantidade"),
+                total_valor=Sum("valor_total"),
+                total_orcs=Count("numero_orcamento", distinct=True),
+                marca_prod=Max("marca"),
+            )
+            .order_by("-total_valor")
+        )
+
+        max_val_top = float(itens_agg[0]["total_valor"] or 1.0) if itens_agg else 1.0
+
+        for idx, item in enumerate(itens_agg, start=1):
+            t_qtd = float(item["total_qtd"] or 0.0)
+            t_val = float(item["total_valor"] or 0.0)
+            p_med = (t_val / t_qtd) if t_qtd > 0 else 0.0
+            pct_barra = min(100.0, (t_val / max_val_top * 100.0)) if max_val_top > 0 else 0.0
+
+            kpi_ranking_total_qtd += t_qtd
+            kpi_ranking_total_valor += t_val
+
+            ranking_produtos_preco.append(
+                {
+                    "posicao": idx,
+                    "codigo_produto": item["codigo_produto"],
+                    "descricao_produto": item["descricao_produto"],
+                    "marca": item.get("marca_prod") or "-",
+                    "quantidade": t_qtd,
+                    "valor_total": t_val,
+                    "valor_total_fmt": f"R$ {t_val:,.2f}",
+                    "preco_medio": p_med,
+                    "preco_medio_fmt": f"R$ {p_med:,.2f}",
+                    "total_orcs": item["total_orcs"],
+                    "pct_barra": round(pct_barra, 1),
+                }
+            )
+
+        kpi_ranking_total_produtos = len(ranking_produtos_preco)
+
+    kpis["ranking_preco_total_produtos"] = kpi_ranking_total_produtos
+    kpis["ranking_preco_total_qtd"] = f"{kpi_ranking_total_qtd:,.0f}"
+    kpis["ranking_preco_total_valor"] = f"R$ {kpi_ranking_total_valor:,.2f}"
+    kpis["ranking_preco_total_orcs"] = len(numeros_orcs_preco)
 
     # Filtra a tabela detalhada se status_filtro foi escolhido
     df_tab = df_visao.drop(columns=["dados_brutos"]).copy()
@@ -1478,7 +1670,15 @@ def gerar_dashboard_orcamentos(
     df_tab["data_iso"] = df_tab["data_emissao_dt"].dt.strftime("%Y-%m-%d").fillna("")
 
     tabela_orcamentos = df_tab.to_dict(orient="records")
-    return kpis, grafico_status_html, grafico_vendedores_html, resumo_vendedores, tabela_orcamentos
+    return (
+        kpis,
+        grafico_status_html,
+        grafico_vendedores_html,
+        grafico_causas_perda_html,
+        resumo_vendedores,
+        tabela_orcamentos,
+        ranking_produtos_preco,
+    )
 
 
 def _classificar_categoria_dre_cp(centro_custo: str, grupo_conta: str, subconta: str) -> str:
@@ -1507,6 +1707,7 @@ def gerar_dashboard_financeiro(
     empresa_filtro: str = "TODAS",
     regime: str = "CAIXA",
     portador_filtro: str = "TODOS",
+    status_filtro: str = "TODOS",
     gerar_graficos: bool = True,
 ):
     """
@@ -1514,9 +1715,14 @@ def gerar_dashboard_financeiro(
     1. Cálculo do Lucro Líquido (DRE Simplificado pelo Regime de Caixa ou Competência/Vencimento)
     2. Conciliação Bancária por Portador/Banco e listagem detalhada de Contas a Receber e Contas a Pagar.
     """
+    from .financeiro_services import eh_transferencia_intercompany
+
     regime_limpo = (regime or "CAIXA").strip().upper()
     if regime_limpo not in ("CAIXA", "COMPETENCIA"):
         regime_limpo = "CAIXA"
+
+    status_limpo = (status_filtro or "TODOS").strip().upper()
+    consolidado = (not empresa_filtro) or empresa_filtro == "TODAS"
 
     # Faturamento Bruto de Notas Fiscais no mês (referência comercial)
     nf_qs = NotaFiscal.objects.exclude(status="CANCELADA").filter(
@@ -1584,6 +1790,7 @@ def gerar_dashboard_financeiro(
             "numero_duplicata",
             "parcela",
             "cliente_nome",
+            "cliente_documento",
             "vendedor_nome",
             "data_emissao",
             "data_vencimento",
@@ -1595,6 +1802,7 @@ def gerar_dashboard_financeiro(
             "subconta",
             "grupo_conta",
             "nosso_numero",
+            "observacao",
             "status",
         )
     )
@@ -1607,6 +1815,7 @@ def gerar_dashboard_financeiro(
             "numero_duplicata",
             "parcela",
             "fornecedor_nome",
+            "fornecedor_documento",
             "data_emissao",
             "data_vencimento",
             "data_pagamento",
@@ -1617,6 +1826,7 @@ def gerar_dashboard_financeiro(
             "subconta",
             "grupo_conta",
             "portador",
+            "observacao",
             "status",
         )
     )
@@ -1648,12 +1858,28 @@ def gerar_dashboard_financeiro(
 
     tabela_cr = []
     for item in cr_list:
+        if consolidado and eh_transferencia_intercompany(
+            nome_parte=item.get("cliente_nome"),
+            documento_parte=item.get("cliente_documento"),
+            grupo_conta=item.get("grupo_conta"),
+            subconta=item.get("subconta"),
+            observacao=item.get("observacao"),
+        ):
+            continue
+
+        st = item["status"]
+        if status_limpo == "A_VENCER" and st != "A_VENCER":
+            continue
+        elif status_limpo == "VENCIDO" and st != "VENCIDO":
+            continue
+        elif status_limpo in ("RECEBIDO", "REALIZADO") and st != "RECEBIDO":
+            continue
+
         v_tot = float(item["valor_total"] or 0.0)
         v_rec = float(item["valor_recebido"] or 0.0)
         v_sal = float(item["valor_saldo"] or 0.0)
         dt_venc = item["data_vencimento"]
         dt_rec = item["data_recebimento"]
-        st = item["status"]
 
         venc_no_mes = bool(dt_venc and dt_venc.year == ano_selecionado and dt_venc.month == mes_selecionado)
         rec_no_mes = bool(dt_rec and dt_rec.year == ano_selecionado and dt_rec.month == mes_selecionado)
@@ -1722,12 +1948,28 @@ def gerar_dashboard_financeiro(
 
     tabela_cp = []
     for item in cp_list:
+        if consolidado and eh_transferencia_intercompany(
+            nome_parte=item.get("fornecedor_nome"),
+            documento_parte=item.get("fornecedor_documento"),
+            grupo_conta=item.get("grupo_conta"),
+            subconta=item.get("subconta"),
+            observacao=item.get("observacao"),
+        ):
+            continue
+
+        st = item["status"]
+        if status_limpo == "A_VENCER" and st != "A_VENCER":
+            continue
+        elif status_limpo == "VENCIDO" and st != "VENCIDO":
+            continue
+        elif status_limpo in ("RECEBIDO", "REALIZADO", "PAGO") and st != "PAGO":
+            continue
+
         v_tot = float(item["valor_total"] or 0.0)
         v_pag = float(item["valor_pago"] or 0.0)
         v_sal = float(item["valor_saldo"] or 0.0)
         dt_venc = item["data_vencimento"]
         dt_pag = item["data_pagamento"]
-        st = item["status"]
 
         venc_no_mes = bool(dt_venc and dt_venc.year == ano_selecionado and dt_venc.month == mes_selecionado)
         pag_no_mes = bool(dt_pag and dt_pag.year == ano_selecionado and dt_pag.month == mes_selecionado)

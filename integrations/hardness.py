@@ -75,6 +75,7 @@ class HardnessAPI:
         self.contas_receber_url = f"{self.base_url}/fin/fin001/grid/fin001grid01/"
         self.contas_pagar_url = f"{self.base_url}/fin/fin002/grid/fin002grid01/"
         self.orcamentos_url = f"{self.base_url}/crm/crm001/grid/crm001GridPrincipalOrcamentos/"
+        self.orcamentos_produtos_url = f"{self.base_url}/crm/crm001/grid/crm001GridPrincipalOrcamentosProdutos/"
         self.verbose = verbose
         self.autenticado = False
         self.grid_dicts = {
@@ -84,6 +85,7 @@ class HardnessAPI:
             self.contas_receber_url: HARDNESS_CONTAS_RECEBER_GRID_ID,
             self.contas_pagar_url: HARDNESS_CONTAS_PAGAR_GRID_ID,
             self.orcamentos_url: HARDNESS_ORCAMENTOS_GRID_ID,
+            self.orcamentos_produtos_url: "",
         }
 
     @staticmethod
@@ -199,7 +201,7 @@ class HardnessAPI:
         data_inicio="",
         data_fim="",
         CFOP="VENDA",
-        cancelada="N",
+        cancelada="",
         url=None,
         campo_data="emissao",
     ):
@@ -257,8 +259,11 @@ class HardnessAPI:
                 # Em orçamentos CFOP pode estar em branco; só aplica CFOP por padrão em NF/Produtos
                 if alvo_url in (self.notafiscal_url, self.produtos_url) or CFOP != "VENDA":
                     filter_data[base64_name] = CFOP
-            elif ("cancelada" in titulo or "cancelado" in titulo) and cancelada is not None and str(cancelada) != "":
-                filter_data[base64_name] = cancelada
+            elif ("cancelada" in titulo or "cancelado" in titulo):
+                if cancelada is not None and str(cancelada) != "":
+                    filter_data[base64_name] = cancelada
+                else:
+                    filter_data[base64_name] = ""
             elif termo_data in titulo:
                 if data_inicio:
                     filter_data[f"{base64_name}-d1"] = data_inicio
@@ -329,6 +334,17 @@ class HardnessAPI:
             CFOP="",
             cancelada=cancelado,
             url=self.orcamentos_url,
+            campo_data="emissao",
+        )
+
+    def filtrar_orcamentos_produtos(self, data_inicio="", data_fim="", cancelado=""):
+        """Aplica filtro por período de emissão no grid de Itens/Produtos de Orçamentos (CRM)."""
+        return self.filtrar(
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            CFOP="",
+            cancelada=cancelado,
+            url=self.orcamentos_produtos_url,
             campo_data="emissao",
         )
 
